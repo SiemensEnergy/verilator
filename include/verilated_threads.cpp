@@ -84,7 +84,10 @@ void VlWorkerThread::workerLoop() {
     dequeWork</* SpinWait: */ false>(&work);
 
     while (true) {
-        if (VL_UNLIKELY(work.m_fnp == shutdownTask)) break;
+        if (VL_UNLIKELY(work.m_fnp == shutdownTask)) {
+            Verilated::threadCleanup();
+            break;
+        }
         work.m_fnp(work.m_selfp, work.m_evenCycle);
         // Wait for next task with spinning.
         dequeWork</* SpinWait: */ true>(&work);
