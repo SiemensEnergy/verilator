@@ -149,8 +149,8 @@ private:
     VL_UNCOPYABLE(VerilatedThreadMsgQueue);
     // METHODS
     static VerilatedThreadMsgQueue& threadton() VL_MT_SAFE {
-        static thread_local VerilatedThreadMsgQueue t_s;
-        return t_s;
+        static thread_local VerilatedThreadMsgQueue* t_s = new VerilatedThreadMsgQueue;
+        return *t_s;
     }
 
 public:
