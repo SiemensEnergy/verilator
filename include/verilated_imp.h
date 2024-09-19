@@ -148,9 +148,9 @@ public:
 private:
     VL_UNCOPYABLE(VerilatedThreadMsgQueue);
     // METHODS
-    static VerilatedThreadMsgQueue& threadton() VL_MT_SAFE {
+    static VerilatedThreadMsgQueue* threadton() VL_MT_SAFE {
         static thread_local VerilatedThreadMsgQueue* t_s = new VerilatedThreadMsgQueue;
-        return *t_s;
+        return t_s;
     }
 
 public:
@@ -163,17 +163,20 @@ public:
             msg.run();
         } else {
             Verilated::endOfEvalReqdInc();
-            threadton().m_queue.push(msg);  // Pass by value to copy the message into queue
+            threadton()->m_queue.push(msg);  // Pass by value to copy the message into queue
         }
     }
     // Push all messages to the eval's queue
     static void flush(VerilatedEvalMsgQueue* evalMsgQp) VL_MT_SAFE {
-        while (!threadton().m_queue.empty()) {
-            evalMsgQp->post(threadton().m_queue.front());
-            threadton().m_queue.pop();
+        while (!threadton()->m_queue.empty()) {
+            evalMsgQp->post(threadton()->m_queue.front());
+            threadton()->m_queue.pop();
             Verilated::endOfEvalReqdDec();
         }
     }
+    // Delete VerilatedThreadMsgQueue
+    // Must be done manually to allow dynamic library version of verilated code to be unloaded
+    static void destroy() VL_MT_SAFE { delete threadton(); }
 };
 
 // FILE* list constructed from a file-descriptor
