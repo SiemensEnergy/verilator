@@ -2491,6 +2491,7 @@ VerilatedContext::VerilatedContext()
 VerilatedContext::~VerilatedContext() {
     checkMagic(this);
     m_magic = 0x1;  // Arbitrary but 0x1 is what Verilator src uses for a deleted pointer
+    VerilatedThreadMsgQueue::destroy();
 }
 
 void VerilatedContext::checkMagic(const VerilatedContext* contextp) {
@@ -3082,6 +3083,7 @@ const char* Verilated::catName(const char* n1, const char* n2, const char* delim
     return t_strp;
 }
 
+void Verilated::threadCleanup() VL_MT_SAFE { VerilatedThreadMsgQueue::destroy(); }
 //=========================================================================
 // Flush and exit callbacks
 

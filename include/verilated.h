@@ -1005,6 +1005,9 @@ public:
     // Internal: Called at end of eval loop
     static void endOfEval(VerilatedEvalMsgQueue* evalMsgQp) VL_MT_SAFE;
 
+    // Called by thread destructor to remove its message queue
+    static void threadCleanup() VL_MT_SAFE;
+
 private:
     static void endOfThreadMTaskGuts(VerilatedEvalMsgQueue* evalMsgQp) VL_MT_SAFE;
 };
