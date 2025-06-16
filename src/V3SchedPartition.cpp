@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -198,7 +198,7 @@ class SchedGraphBuilder final : public VNVisitor {
             if (vrefp->access().isReadOrRW() && m_readTriggersThisLogic(vscp)) {
                 new V3GraphEdge{m_graphp, getVarVertex(vscp), logicVtxp, 10};
             }
-            if (vrefp->access().isWriteOrRW()) {
+            if (vrefp->access().isWriteOrRW() && !vrefp->varp()->ignoreSchedWrite()) {
                 new V3GraphEdge{m_graphp, logicVtxp, getVarVertex(vscp), 10};
             }
         });
@@ -228,9 +228,9 @@ class SchedGraphBuilder final : public VNVisitor {
             });
         }
 
+        VL_RESTORER(m_senTreep);
         m_senTreep = senTreep;
         iterateChildrenConst(nodep);
-        m_senTreep = nullptr;
     }
 
     void visit(AstNodeProcedure* nodep) override { visitLogic(nodep); }
@@ -331,7 +331,7 @@ void colorActiveRegion(V3Graph& graph) {
 
 LogicRegions partition(LogicByScope& clockedLogic, LogicByScope& combinationalLogic,
                        LogicByScope& hybridLogic) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
 
     // Build the graph
     const std::unique_ptr<V3Graph> graphp
@@ -362,7 +362,8 @@ LogicRegions partition(LogicByScope& clockedLogic, LogicByScope& combinationalLo
             nodep->foreach([](const AstNodeVarRef* vrefp) {
                 AstVarScope* const vscp = vrefp->varScopep();
                 if (vrefp->access().isReadOrRW()) vscp->user1(true);
-                if (vrefp->access().isWriteOrRW()) vscp->user2(true);
+                if (vrefp->access().isWriteOrRW() && !vrefp->varp()->ignoreSchedWrite())
+                    vscp->user2(true);
             });
         };
 

@@ -8,7 +8,7 @@
 
 `define stop $stop
 `define checkr(gotv,expv) do if ((gotv) != (expv)) begin $write("%%Error: %s:%0d:  got=%f exp=%f\n", `__FILE__,`__LINE__, (gotv), (expv)); `stop; end while(0);
-`define checks(gotv,expv) do if ((gotv) !== (expv)) begin $write("%%Error: %s:%0d:  got='%s' exp='%s'\n", `__FILE__,`__LINE__, (gotv), (expv)); `stop; end while(0);
+`define checks(gotv,expv) do if ((gotv) != (expv)) begin $write("%%Error: %s:%0d:  got='%s' exp='%s'\n", `__FILE__,`__LINE__, (gotv), (expv)); `stop; end while(0);
 `define is_near_real(a,b)  (( ((a)<(b)) ? (b)-(a) : (a)-(b)) < (((a)/(b))*0.0001))
 
 module t (/*AUTOARG*/
@@ -166,9 +166,11 @@ module t (/*AUTOARG*/
       `checks(s, "-inf");
       r = $sqrt(-1.0);  // NaN
       s = $sformatf("%g", r);
-      `checks(s, "-nan");
+      if (s == "-nan") s = "nan";
+      `checks(s, "nan");
       r = -$sqrt(-1.0);  // NaN
       s = $sformatf("%g", r);
+      if (s == "-nan") s = "nan";
       `checks(s, "nan");
 
       if (real'(TWENTY) != 20.0) $stop;

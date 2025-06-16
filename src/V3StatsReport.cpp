@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2005-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2005-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -228,13 +228,13 @@ void V3Stats::infoHeader(std::ofstream& os, const string& prefix) {
 }
 
 void V3Stats::statsReport() {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
 
     // Open stats file
     const string filename
         = v3Global.opt.hierTopDataDir() + "/" + v3Global.opt.prefix() + "__stats.txt";
     std::ofstream* ofp{V3File::new_ofstream(filename)};
-    if (ofp->fail()) v3fatal("Can't write " << filename);
+    if (ofp->fail()) v3fatal("Can't write file: " << filename);
 
     { StatsReport{ofp}; }  // Destruct before cleanup
 

@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -64,10 +64,12 @@ std::ostream& operator<<(std::ostream& os, VNType rhs);
 const std::shared_ptr<const string> VSelfPointerText::s_emptyp = std::make_shared<string>("");
 const std::shared_ptr<const string> VSelfPointerText::s_thisp = std::make_shared<string>("this");
 
+string VSelfPointerText::replaceThis(bool useSelfForThis, const string& text) {
+    return useSelfForThis ? VString::replaceWord(text, "this", "vlSelf") : text;
+}
+
 string VSelfPointerText::protect(bool useSelfForThis, bool protect) const {
-    const string& sp
-        = useSelfForThis ? VString::replaceWord(asString(), "this", "vlSelf") : asString();
-    return VIdProtect::protectWordsIf(sp, protect);
+    return VIdProtect::protectWordsIf(replaceThis(useSelfForThis, asString()), protect);
 }
 
 //######################################################################
@@ -196,6 +198,11 @@ string AstNode::prettyName(const string& namein) VL_PURE {
                 pos += 7;
                 continue;
             }
+            if (0 == std::strncmp(pos, "__Viftop", 8)) {
+                pretty += "";
+                pos += 8;
+                continue;
+            }
             if (pos[0] == '_' && pos[1] == '_' && pos[2] == '0' && std::isxdigit(pos[3])
                 && std::isxdigit(pos[4])) {
                 char value = 0;
@@ -222,12 +229,14 @@ string AstNode::vpiName(const string& namein) {
     // This is slightly different from prettyName, in that when we encounter escaped characters,
     // we change that identifier to an escaped identifier, wrapping it with '\' and ' '
     // as specified in LRM 23.6
+    string name = namein;
+    if (0 == namein.substr(0, 7).compare("__SYM__")) name = namein.substr(7);
     string pretty;
-    pretty.reserve(namein.length());
+    pretty.reserve(name.length());
     bool inEscapedIdent = false;
     int lastIdent = 0;
 
-    for (const char* pos = namein.c_str(); *pos;) {
+    for (const char* pos = name.c_str(); *pos;) {
         char specialChar = 0;
         if (pos[0] == '-' && pos[1] == '>') {  // ->
             specialChar = '.';
@@ -315,7 +324,7 @@ void AstNode::debugTreeChange(const AstNode* nodep, const char* prefix, int line
 //  // Commenting out the section below may crash, as the tree state
 //  // between edits is not always consistent for printing
 //  cout<<"-treeChange: V3Ast.cpp:"<<lineno<<" Tree Change for "<<prefix<<endl;
-//  v3Global.rootp()->dumpTree("-  treeChange: ");
+//  if (debug()) v3Global.rootp()->dumpTree("-  treeChange: ");
 //  if (next||1) nodep->dumpTreeAndNext(cout, prefix);
 //  else nodep->dumpTree(prefix);
 //  nodep->checkTree();
@@ -512,6 +521,10 @@ void AstNode::replaceWith(AstNode* newp) {
     this->unlinkFrBack(&repHandle);
     repHandle.relink(newp);
 }
+void AstNode::replaceWithKeepDType(AstNode* newp) {
+    newp->dtypeFrom(this);
+    replaceWith(newp);
+}
 
 void VNRelinker::dump(std::ostream& str) const {
     str << " BK=" << reinterpret_cast<uint32_t*>(m_backp);
@@ -658,7 +671,7 @@ AstNode* AstNode::unlinkFrBack(VNRelinker* linkerp) {
 
 void AstNode::relink(VNRelinker* linkerp) {
     if (debug() > 8) {
-        UINFO(0, " EDIT:      relink: ");
+        UINFO_PREFIX(" EDIT:      relink: ");
         dumpPtrs();
     }
     AstNode* const newp = this;
@@ -795,13 +808,7 @@ void AstNode::swapWith(AstNode* bp) {
 
 AstNode* AstNode::cloneTreeIter(bool needPure) {
     // private: Clone single node and children
-    if (VL_UNLIKELY(needPure && !isPure())) {
-        this->v3warn(SIDEEFFECT,
-                     "Expression side effect may be mishandled\n"
-                         << this->warnMore()
-                         << "... Suggest use a temporary variable in place of this expression");
-        // this->v3fatalSrc("cloneTreePure debug backtrace");  // Comment in to debug where caused
-    }
+    if (needPure) purityCheck();
     AstNode* const newp = this->clone();
     if (this->m_op1p) newp->op1p(this->m_op1p->cloneTreeIterList(needPure));
     if (this->m_op2p) newp->op2p(this->m_op2p->cloneTreeIterList(needPure));
@@ -846,6 +853,16 @@ AstNode* AstNode::cloneTree(bool cloneNextLink, bool needPure) {
     newp->cloneRelinkTree();
     debugTreeChange(newp, "-cloneOut: ", __LINE__, true);
     return newp;
+}
+
+void AstNode::purityCheck() {
+    if (VL_UNLIKELY(!isPure())) {
+        this->v3warn(SIDEEFFECT,
+                     "Expression side effect may be mishandled\n"
+                         << this->warnMore()
+                         << "... Suggest use a temporary variable in place of this expression");
+        // this->v3fatalSrc("cloneTreePure debug backtrace");  // Comment in to debug where caused
+    }
 }
 
 //======================================================================
@@ -1101,7 +1118,7 @@ bool AstNode::sameTreeIter(const AstNode* node1p, const AstNode* node2p, bool ig
         (!node1p->dtypep() && !node2p->dtypep()) || (node1p->dtypep() && node2p->dtypep()), node1p,
         "Comparison of a node with dtypep() with a node without dtypep()\n-node2=" << node2p);
     if (node1p->dtypep() && !node1p->dtypep()->similarDType(node2p->dtypep())) return false;
-    if (!node1p->same(node2p) || (gateOnly && !node1p->isGateOptimizable())) return false;
+    if (!node1p->sameNode(node2p) || (gateOnly && !node1p->isGateOptimizable())) return false;
     return (sameTreeIter(node1p->m_op1p, node2p->m_op1p, false, gateOnly)
             && sameTreeIter(node1p->m_op2p, node2p->m_op2p, false, gateOnly)
             && sameTreeIter(node1p->m_op3p, node2p->m_op3p, false, gateOnly)
@@ -1286,10 +1303,17 @@ void AstNode::dumpPtrs(std::ostream& os) const {
 void AstNode::dumpTree(std::ostream& os, const string& indent, int maxDepth) const {
     static int s_debugFileline = v3Global.opt.debugSrcLevel("fileline");  // --debugi-fileline 9
     os << indent << " " << this << '\n';
+    if (VN_DELETED(this)) return;
     if (debug() > 8) {
         os << indent << "     ";
         dumpPtrs(os);
     }
+    if (VN_DELETED(op1p()) || VN_DELETED(op2p())  // LCOV_EXCL_START
+        || VN_DELETED(op3p()) || VN_DELETED(op4p())) {
+        os << indent << "1/2/3/4: %E-0x1/deleted! node " << cvtToHex(this)
+           << endl;  // endl intentional to do flush
+        return;
+    }  // LCOV_EXCL_STOP
     if (s_debugFileline >= 9) os << fileline()->warnContextSecondary();
     if (maxDepth == 1) {
         if (op1p() || op2p() || op3p() || op4p()) os << indent << "1: ...(maxDepth)\n";
@@ -1320,9 +1344,9 @@ void AstNode::dumpTreeFile(const string& filename, bool doDump) {
     // Not const function as calls checkTree
     if (doDump) {
         {  // Write log & close
-            UINFO(2, "Dumping " << filename << endl);
+            UINFO(2, "Dumping " << filename);
             const std::unique_ptr<std::ofstream> logsp{V3File::new_ofstream(filename)};
-            if (logsp->fail()) v3fatal("Can't write " << filename);
+            if (logsp->fail()) v3fatal("Can't write file: " << filename);
             *logsp << "Verilator Tree Dump (format 0x3900) from <e" << std::dec << editCountLast();
             *logsp << "> to <e" << std::dec << editCountGbl() << ">\n";
             if (editCountGbl() == editCountLast() && ::dumpTreeLevel() < 9) {
@@ -1365,18 +1389,18 @@ void AstNode::dumpTreeDot(std::ostream& os) const {
 
 void AstNode::dumpTreeJsonFile(const string& filename, bool doDump) {
     if (!doDump) return;
-    UINFO(2, "Dumping " << filename << endl);
+    UINFO(2, "Dumping " << filename);
     const std::unique_ptr<std::ofstream> treejsonp{V3File::new_ofstream(filename)};
-    if (treejsonp->fail()) v3fatal("Can't write " << filename);
+    if (treejsonp->fail()) v3fatal("Can't write file: " << filename);
     dumpTreeJson(*treejsonp);
     *treejsonp << '\n';
 }
 
 void AstNode::dumpJsonMetaFileGdb(const char* filename) { dumpJsonMetaFile(filename); }
 void AstNode::dumpJsonMetaFile(const string& filename) {
-    UINFO(2, "Dumping " << filename << endl);
+    UINFO(2, "Dumping " << filename);
     const std::unique_ptr<std::ofstream> treejsonp{V3File::new_ofstream(filename)};
-    if (treejsonp->fail()) v3fatalStatic("Can't write " << filename);
+    if (treejsonp->fail()) v3fatalStatic("Can't write file: " << filename);
     *treejsonp << '{';
     FileLine::fileNameNumMapDumpJson(*treejsonp);
     *treejsonp << ',';
@@ -1388,9 +1412,9 @@ void AstNode::dumpJsonMetaFile(const string& filename) {
 
 void AstNode::dumpTreeDotFile(const string& filename, bool doDump) {
     if (doDump) {
-        UINFO(2, "Dumping " << filename << endl);
+        UINFO(2, "Dumping " << filename);
         const std::unique_ptr<std::ofstream> treedotp{V3File::new_ofstream(filename)};
-        if (treedotp->fail()) v3fatal("Can't write " << filename);
+        if (treedotp->fail()) v3fatal("Can't write file: " << filename);
         *treedotp << "digraph vTree{\n";
         *treedotp << "\tgraph\t[label=\"" << filename + ".dot"
                   << "\",\n";
@@ -1423,8 +1447,13 @@ string AstNode::instanceStr() const {
     return "";
 }
 void AstNode::v3errorEnd(std::ostringstream& str) const VL_RELEASE(V3Error::s().m_mutex) {
+    // Don't look for instance name when warning is disabled.
+    // In case of large number of warnings, this can
+    // take significant amount of time
+    const string instanceStrExtra
+        = m_fileline->warnIsOff(V3Error::s().errorCode()) ? "" : instanceStr();
     if (!m_fileline) {
-        V3Error::v3errorEnd(str, instanceStr());
+        V3Error::v3errorEnd(str, instanceStrExtra, nullptr);
     } else {
         std::ostringstream nsstr;
         nsstr << str.str();
@@ -1432,13 +1461,9 @@ void AstNode::v3errorEnd(std::ostringstream& str) const VL_RELEASE(V3Error::s().
             nsstr << '\n';
             nsstr << "-node: ";
             const_cast<AstNode*>(this)->dump(nsstr);
-            nsstr << endl;
+            nsstr << '\n';
         }
-        // Don't look for instance name when warning is disabled.
-        // In case of large number of warnings, this can
-        // take significant amount of time
-        m_fileline->v3errorEnd(
-            nsstr, m_fileline->warnIsOff(V3Error::s().errorCode()) ? "" : instanceStr());
+        m_fileline->v3errorEnd(nsstr, instanceStrExtra);
     }
 }
 void AstNode::v3errorEndFatal(std::ostringstream& str) const VL_RELEASE(V3Error::s().m_mutex) {
@@ -1558,7 +1583,7 @@ static VCastable computeCastableImp(const AstNodeDType* toDtp, const AstNodeDTyp
         return VCastable::COMPATIBLE;
     } else if (toNumericable) {
         if (fromNumericable) return VCastable::COMPATIBLE;
-    } else if (VN_IS(toDtp, EnumDType)) {
+    } else if (VN_IS(toBaseDtp, EnumDType)) {
         if (VN_IS(fromBaseDtp, EnumDType) && toDtp->sameTree(fromDtp))
             return VCastable::ENUM_IMPLICIT;
         if (fromNumericable) return VCastable::ENUM_EXPLICIT;
@@ -1583,9 +1608,9 @@ static VCastable computeCastableImp(const AstNodeDType* toDtp, const AstNodeDTyp
 VCastable AstNode::computeCastable(const AstNodeDType* toDtp, const AstNodeDType* fromDtp,
                                    const AstNode* fromConstp) {
     const auto castable = computeCastableImp(toDtp, fromDtp, fromConstp);
-    UINFO(9, "  castable=" << castable << "  for " << toDtp << endl);
-    UINFO(9, "     =?= " << fromDtp << endl);
-    if (fromConstp) UINFO(9, "     const= " << fromConstp << endl);
+    UINFO(9, "  castable=" << castable << "  for " << toDtp);
+    UINFO(9, "     =?= " << fromDtp);
+    if (fromConstp) UINFO(9, "     const= " << fromConstp);
     return castable;
 }
 

@@ -1,4 +1,4 @@
-.. Copyright 2003-2024 by Wilson Snyder.
+.. Copyright 2003-2025 by Wilson Snyder.
 .. SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
 ******************************
@@ -128,7 +128,7 @@ How do I generate waveforms (traces) in C++?
 
 See also the next question for tracing in SystemC mode.
 
-A. Pass the :vlopt:`--trace` option to Verilator.  Then you may use ``$dumpfile`` and
+A. Pass the :vlopt:`--trace-vcd` option to Verilator.  Then you may use ``$dumpfile`` and
    ``$dumpvars`` to enable traces, the same as with any Verilog simulator,
    although Verilator ignores the arguments to ``$dumpvars``. See
    ``examples/make_tracing_c`` in the distribution.
@@ -177,7 +177,7 @@ file.
 How do I generate waveforms (traces) in SystemC?
 """"""""""""""""""""""""""""""""""""""""""""""""
 
-A. Pass the :vlopt:`--trace` option to Verilator, and in your top-level
+A. Pass the :vlopt:`--trace-vcd` option to Verilator, and in your top-level
    :code:`sc_main()`, call :code:`Verilated::traceEverOn(true)`.  Then you
    may use :code:`$dumpfile` and code:`$dumpvars` to enable traces, as
    with any Verilog simulator; see the non-SystemC example in
@@ -260,7 +260,7 @@ How do I view waveforms (aka dumps or traces)?
 
 Verilator creates standard VCD (Value Change Dump) and FST files.  VCD
 files are viewable with the open-source
-`GTKWave <http://gtkwave.sourceforge.net/>`_,
+`GTKWave <https://gtkwave.sourceforge.net/>`_,
 `Surfer <https://surfer-project.org/>`_, Dinotrace (legacy), or any of the
 many closed-source viewer offerings; FST is supported only by GTKWave and
 Surfer.

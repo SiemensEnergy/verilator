@@ -1,9 +1,9 @@
-.. Copyright 2003-2024 by Wilson Snyder.
+.. Copyright 2003-2025 by Wilson Snyder.
 .. SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
-*******************
-Errors and Warnings
-*******************
+=====================
+ Errors and Warnings
+=====================
 
 .. _Disabling Warnings:
 
@@ -37,14 +37,14 @@ Warnings may be disabled in multiple ways:
    propagate upwards to any parent file (file that included the file with
    the lint_off).
 
-#. Disable the warning using :ref:`Configuration Files` with a
+#. Disable the warning using :ref:`Verilator Configuration Files` with a
    :option:`lint_off` command.  This is useful when a script suppresses
    warnings, and the Verilog source should not be changed.  This method also
    allows matching on the warning text.
 
    .. code-block:: sv
 
-         lint_off -rule UNSIGNED -file "*/example.v" -line 1
+         lint_off -rule UNSIGNED -file "*/example.v" -lines 1
 
 
 Error And Warning Format
@@ -68,6 +68,10 @@ source code corresponding to the error, prefixed by the line number and a "
 | ".  Following this is typically an arrow and ~ pointing at the error on
 the source line directly above.
 
+Instead of parsing this text diagnostic output, tools that need to
+understand Verilator's warning output should read the SARIF JSON output
+created with :vlopt:`--diagnostics-sarif`.
+
 
 List Of Warnings
 ================
@@ -85,6 +89,8 @@ List Of Warnings
    that is not yet supported in Verilator.  See also :ref:`Language
    Limitations`.
 
+
+   .. t_dist_docs_style restart_sort
 
 .. option:: ALWCOMBORDER
 
@@ -164,6 +170,28 @@ List Of Warnings
    1800-2023.  For example, an empty pragma line, or an incorrectly used
    'pragma protect'.  Third-party pragmas not defined by IEEE 1800-2023 are
    ignored.
+
+   This error may be disabled with a lint_off BADSTDPRAGMA metacomment.
+
+   Ignoring this warning will cause the pragma to be ignored.
+
+
+.. option:: BADVLTPRAGMA
+
+   An error that a `/*verilator ...*/` metacomment pragma is badly formed
+   or not understood.
+
+   Faulty example:
+
+   .. include:: ../../docs/gen/ex_BADVLTPRAGMA_faulty.rst
+
+   Results in:
+
+   .. include:: ../../docs/gen/ex_BADVLTPRAGMA_msg.rst
+
+   This error may be disabled with a lint_off BADVLTPRAGMA metacomment.
+
+   Ignoring this warning will cause the pragma to be ignored.
 
 
 .. option:: BLKANDNBLK
@@ -445,6 +473,18 @@ List Of Warnings
    correctly.
 
 
+.. option:: COVERIGN
+
+   Warns that Verilator does not support certain forms of
+   :code:`covergroup`, :code:`coverpoint`, and coverage options, and the
+   construct was are ignored.
+
+   Disabling the :option:`UNSUPPORTED` error also disables this warning.
+
+   Ignoring this warning may make Verilator ignore lint checking on the
+   construct, and collect coverage data differently from other simulators.
+
+
 .. option:: DECLFILENAME
 
    .. TODO better example
@@ -458,6 +498,32 @@ List Of Warnings
 
    Disabled by default as this is a code-style warning; it will simulate
    correctly.
+
+
+.. option:: DEFOVERRIDE
+
+   Warns that a macro definition within the code is being overridden by a
+   command line directive:
+
+   For example, running Verilator with :code:`<+define+\<DUP\>=\<def2\>>` and
+
+   .. code-block:: sv
+      :linenos:
+      :emphasize-lines: 1
+
+         `define DUP def2 //<--- Warning
+
+   Results in:
+
+   .. code-block::
+
+         %Warning-DEFOVERRIDE: example.v1:20: Overriding define: 'DEF' with value: 'def2' to existing command line define value: 'def1'
+                      ... Location of previous definition, with value: '50'
+
+   While not explicitly stated in the IEEE 1800-2023 standard, this warning
+   tracks with the other simulators' behavior of overriding macro
+   definitions within code files with the definition passed in through
+   the command line.
 
 
 .. option:: DEFPARAM
@@ -1042,8 +1108,6 @@ List Of Warnings
 
 .. option:: LITENDIAN
 
-   .. TODO better example
-
    The naming of this warning is in contradiction with the common
    interpretation of little endian. It was therefore renamed to
    :option:`ASCRANGE`. While :option:`LITENDIAN` remains for
@@ -1119,6 +1183,19 @@ List Of Warnings
    discarded.
 
 
+.. option:: MODMISSING
+
+   .. TODO better example
+
+   Error that a module, typically referenced by a cell, was not found.
+   This is typically fatal, but may be suppressed in some linting
+   situations with missing libraries.
+
+   Ignoring this error will cause the cell definition to be discarded.
+   Simulation results will likely be wrong, so typically used only with
+   lint-only.
+
+
 .. option:: MULTIDRIVEN
 
    Warns that the specified signal comes from multiple :code:`always`
@@ -1175,6 +1252,8 @@ List Of Warnings
    modules' signals seem identical, e.g., multiple modules with a "clk"
    input.
 
+   Ignoring this warning will make multiple tops, as described in (3) above.
+
 
 .. option:: NEEDTIMINGOPT
 
@@ -1210,19 +1289,22 @@ List Of Warnings
    simulate correctly.
 
 
-.. option:: NOTIMING
-
-   Error when a timing-related construct that requires :vlopt:`--timing` has
-   been encountered. Issued only if Verilator is run with the
-   :vlopt:`--no-timing` option.
-
-
 .. option:: NONSTD
 
    Warns when a non-standard language feature is used that has a standard
    equivalent, which might behave differently in corner cases. For example
    :code:`$psprintf` system function is replaced by its standard equivalent
    :code:`$sformatf`.
+
+   Ignoring this warning will only suppress the lint check; it will
+   simulate correctly.
+
+
+.. option:: NOTIMING
+
+   Error when a timing-related construct that requires :vlopt:`--timing` has
+   been encountered. Issued only if Verilator is run with the
+   :vlopt:`--no-timing` option.
 
 
 .. option:: NULLPORT
@@ -1248,6 +1330,7 @@ List Of Warnings
 
    Ignoring this warning will only suppress the lint check; it will
    simulate correctly.
+
 
 .. option:: PINCONNECTEMPTY
 
@@ -1275,11 +1358,11 @@ List Of Warnings
 
    Faulty example:
 
-   .. include:: ../../docs/gen/ex_PKGNODECL_faulty.rst
+   .. include:: ../../docs/gen/ex_PINMISSING_faulty.rst
 
    Results in:
 
-   .. include:: ../../docs/gen/ex_PKGNODECL_msg.rst
+   .. include:: ../../docs/gen/ex_PINMISSING_msg.rst
 
    Repaired example:
 
@@ -1337,6 +1420,15 @@ List Of Warnings
    This error may be disabled with a lint_off PINNOTFOUND metacomment.
 
 
+.. option:: PKGNODECL
+
+   Never issued since version 5.038.  Historically an error that a
+   package/class appears to have been referenced that has not yet been
+   declared.  According to IEEE 1800-2023 26.3, all packages must be
+   declared before being used. However, several standard libraries
+   including UVM violate this, and other tools do not warn.
+
+
 .. option:: PORTSHORT
 
    Warns that an output port is connected to a constant.
@@ -1358,26 +1450,6 @@ List Of Warnings
    implying it is an input.
 
    This error may be disabled with a lint_off PORTSHORT metacomment.
-
-
-.. option:: PKGNODECL
-
-   An error that a package/class appears to have been referenced that has
-   not yet been declared.  According to IEEE 1800-2023 26.3, all packages
-   must be declared before being used.
-
-   Faulty example:
-
-   .. include:: ../../docs/gen/ex_PKGNODECL_faulty.rst
-
-   Results in:
-
-   .. include:: ../../docs/gen/ex_PKGNODECL_msg.rst
-
-   Often the package is declared in its own header file.  In this case add
-   an include of that package header file to the referencing file.  (And
-   make sure you have header guards in the package's header file to prevent
-   multiple declarations of the package.)
 
 
 .. option:: PREPROCZERO
@@ -1403,6 +1475,40 @@ List Of Warnings
 
    The portable way to suppress this warning is to use a define value other
    than zero, when it is to be used in a preprocessor expression.
+
+   Ignoring this warning will only suppress the lint check; it will
+   simulate correctly.
+
+
+.. option:: PROCASSINIT
+
+   Warns that the specified signal is given an initial value where it is
+   declared, and is also driven in an always process.  Typically such
+   initial values should instead be set using a reset signal inside the
+   process, to match requirements of ASIC synthesis tools.  However,
+   declaration initializers are a valid FPGA design idiom and therefore,
+   FPGA users may want to disable this warning.
+
+   Faulty example:
+
+   .. include:: ../../docs/gen/ex_PROCASSINIT_faulty.rst
+
+   Results in:
+
+   .. include:: ../../docs/gen/ex_PROCASSINIT_msg.rst
+
+   One possible fix, adding a reset to the always:
+
+   .. include:: ../../docs/gen/ex_PROCASSINIT_fixed.rst
+
+   Alternatively, use an initial block for the initialization:
+
+   .. code-block:: sv
+
+      initial flop_out = 1;  // <--- Fixed
+
+   Disabled by default as this is a code-style warning; it will simulate
+   correctly.
 
 
 .. option:: PROCASSWIRE
@@ -1435,7 +1541,7 @@ List Of Warnings
    inside the protected region will be partly checked for correctness but is
    otherwise ignored.
 
-   Suppressing the warning may make Verilator differ from a simulator that
+   Ignoring the warning may make Verilator differ from a simulator that
    accepts the protected code.
 
 
@@ -1452,6 +1558,9 @@ List Of Warnings
 
    Warns that a real number is being implicitly rounded to an integer, with
    possible loss of precision.
+
+   Ignoring this warning will only suppress the lint check; it will
+   simulate correctly.
 
    Faulty example:
 
@@ -1482,8 +1591,12 @@ List Of Warnings
 
 .. option:: REDEFMACRO
 
-   Warns that the code has redefined the same macro with a different value,
-   for example:
+   Warns that the code has redefined the same macro with a different value.
+
+   Ignoring this warning will only suppress the lint check; it will
+   simulate correctly.
+
+   For example:
 
    .. code-block:: sv
       :linenos:
@@ -1692,6 +1805,9 @@ List Of Warnings
    Warning that a symbol matches a C++ reserved word, and using this as a
    symbol name would result in odd C++ compiler errors.  You may disable
    this warning, but Verilator will rename the symbol to avoid conflict.
+   If you are using `--vpi` and only mark things as public for VPI access
+   (and not C++ access) then it is advisable to disable this warning with
+   :code:`-Wno-SYMRSVDWORD`.
 
 
 .. option:: SYNCASYNCNET
@@ -2006,12 +2122,12 @@ List Of Warnings
 
    .. code-block:: sv
 
-         wire _unused_ok = &{1'b0,
+         wire _unused_ok = 1'b0 && &{1'b0,
                              sig_not_used_a,
                              sig_not_used_yet_b,  // To be fixed
                              1'b0};
 
-   The reduction AND and constant zeros mean the net will always be zero,
+   The AND with constant zero mean the net will always be zero,
    so won't use simulation runtime.  The redundant leading and trailing
    zeros avoid syntax errors if there are no signals between them.  The
    magic name "unused" (controlled by the :vlopt:`--unused-regexp` option)
@@ -2103,7 +2219,7 @@ List Of Warnings
 
    .. include:: ../../docs/gen/ex_VARHIDDEN_msg.rst
 
-   To resolve this, rename the variable to an unique name.
+   To resolve this, rename the inner or outer variable to an unique name.
 
 
 .. option:: WAITCONST
@@ -2166,21 +2282,6 @@ List Of Warnings
    .. include:: ../../docs/gen/ex_WIDTHEXPAND_1_fixed.rst
 
 
-.. option:: WIDTHTRUNC
-
-   A more granular :option:`WIDTH` warning, for when a value is
-   truncated. See :option:`WIDTH`.
-
-.. option:: WIDTHEXPAND
-
-   A more granular :option:`WIDTH` warning, for when a value is zero
-   expanded. See :option:`WIDTH`.
-
-.. option:: WIDTHXZEXPAND
-
-   A more granular :option:`WIDTH` warning, for when a value is X/Z
-   expanded. See :option:`WIDTH`.
-
 .. option:: WIDTHCONCAT
 
    Warns that based on the width rules of Verilog, a concatenate, or
@@ -2205,6 +2306,21 @@ List Of Warnings
    width to the parameter definition (:code:`parameter [31:0]`), or add the
    width to the parameter usage (:code:`{PAR[31:0], PAR[31:0]}`).
 
+
+.. option:: WIDTHEXPAND
+
+   A more granular :option:`WIDTH` warning, for when a value is zero
+   expanded. See :option:`WIDTH`.
+
+.. option:: WIDTHTRUNC
+
+   A more granular :option:`WIDTH` warning, for when a value is
+   truncated. See :option:`WIDTH`.
+
+.. option:: WIDTHXZEXPAND
+
+   A more granular :option:`WIDTH` warning, for when a value is X/Z
+   expanded. See :option:`WIDTH`.
 
 .. option:: ZERODLY
 

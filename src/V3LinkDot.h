@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -28,6 +28,7 @@
 enum VLinkDotStep : uint8_t { LDS_PRIMARY, LDS_PARAMED, LDS_ARRAYED, LDS_SCOPED };
 
 class V3LinkDot final {
+    static void dumpSubstep(const string& name) VL_MT_DISABLED;
     static void linkDotGuts(AstNetlist* rootp, VLinkDotStep step) VL_MT_DISABLED;
 
 public:

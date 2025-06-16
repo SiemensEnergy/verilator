@@ -1,4 +1,4 @@
-.. Copyright 2003-2024 by Wilson Snyder.
+.. Copyright 2003-2025 by Wilson Snyder.
 .. SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
 *****
@@ -65,9 +65,9 @@ For --cc/--sc, it creates:
    * - *{prefix}*\ ___024root\ *{__DepSet_hash__n}*\ .cpp
      - Infrequent cold routines (hashed to reduce build times)
    * - *{prefix}*\ ___024root__Trace\ *{__n}*\ .cpp
-     - Wave file generation code (from --trace)
+     - Wave file generation code (from --trace-\*)
    * - *{prefix}*\ ___024root__Trace__Slow\ *{__n}*\ .cpp
-     - Wave file generation code (from --trace)
+     - Wave file generation code (from --trace-\*)
    * - *{prefix}*\ __Dpi.h
      - DPI import and export declarations (from --dpi)
    * - *{prefix}*\ __Dpi.cpp
@@ -112,12 +112,14 @@ In specific debug and other modes, it also creates:
 
 .. list-table::
 
-   * - *{prefix}*\ .xml
-     - XML tree information (from --xml)
+   * - *{prefix}*\ .sarif
+     - SARIF diagnostics (from --diagnostics-sarif)
    * - *{prefix}*\ .tree.json
      - JSON tree information (from --json-only)
    * - *{prefix}*\ .tree.meta.json
      - JSON tree metadata (from --json-only)
+   * - *{prefix}*\ .xml
+     - XML tree information (from --xml)
    * - *{prefix}*\ __cdc.txt
      - Clock Domain Crossing checks (from --cdc)
    * - *{prefix}*\ __stats.txt

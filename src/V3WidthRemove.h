@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -36,9 +36,8 @@ class WidthRemoveVisitor final : public VNVisitor {
     VL_DEFINE_DEBUG_FUNCTIONS;
 
     void replaceWithSignedVersion(AstNode* nodep, AstNode* newp) {
-        UINFO(6, " Replace " << nodep << " w/ " << newp << endl);
-        nodep->replaceWith(newp);
-        newp->dtypeFrom(nodep);
+        UINFO(6, " Replace " << nodep << " w/ " << newp);
+        nodep->replaceWithKeepDType(newp);
         VL_DO_DANGLING(pushDeletep(nodep), nodep);
     }
 

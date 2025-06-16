@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -65,7 +65,7 @@ private:
         if (AstBasicDType* const bdtypep = VN_CAST(nodep, BasicDType)) {
             AstBasicDType* const newp = nodep->findInsertSameDType(bdtypep);
             if (newp != bdtypep && debug() >= 9) {
-                UINFO(9, "dtype replacement ");
+                UINFO_PREFIX("dtype replacement ");
                 nodep->dumpSmall(std::cout);
                 std::cout << "  ---->  ";
                 newp->dumpSmall(std::cout);
@@ -85,26 +85,35 @@ private:
                         "Only rand_mode() and constraint_mode() can have no def");
             return;
         }
-        if (const auto varp = VN_CAST(defp, Var)) {
-            local = varp->isHideLocal();
-            prot = varp->isHideProtected();
-        } else if (const auto ftaskp = VN_CAST(defp, NodeFTask)) {
-            local = ftaskp->isHideLocal();
-            prot = ftaskp->isHideProtected();
+        if (const auto anodep = VN_CAST(defp, Var)) {
+            local = anodep->isHideLocal();
+            prot = anodep->isHideProtected();
+        } else if (const auto anodep = VN_CAST(defp, NodeFTask)) {
+            local = anodep->isHideLocal();
+            prot = anodep->isHideProtected();
+        } else if (const auto anodep = VN_CAST(defp, Typedef)) {
+            local = anodep->isHideLocal();
+            prot = anodep->isHideProtected();
         } else {
             nodep->v3fatalSrc("ref to unhandled definition type " << defp->prettyTypeName());
         }
         if (local || prot) {
             const auto refClassp = VN_CAST(m_modp, Class);
             const char* how = nullptr;
-            if (local && defClassp && refClassp != defClassp) {
+            // Inner nested classes can access `local` or `protected` members of their outer class
+            const auto nestedAccess = [refClassp](const AstClass*, const AstNode* memberp) {
+                return memberp == refClassp;
+            };
+            if (local && defClassp
+                && ((refClassp != defClassp) && !(defClassp->existsMember(nestedAccess)))) {
                 how = "'local'";
-            } else if (prot && defClassp && !AstClass::isClassExtendedFrom(refClassp, defClassp)) {
+            } else if (prot && defClassp && !AstClass::isClassExtendedFrom(refClassp, defClassp)
+                       && !(defClassp->existsMember(nestedAccess))) {
                 how = "'protected'";
             }
             if (how) {
-                UINFO(9, "refclass " << refClassp << endl);
-                UINFO(9, "defclass " << defClassp << endl);
+                UINFO(9, "refclass " << refClassp);
+                UINFO(9, "defclass " << defClassp);
                 nodep->v3warn(ENCAPSULATED, nodep->prettyNameQ()
                                                 << " is hidden as " << how
                                                 << " within this context (IEEE 1800-2023 8.18)\n"
@@ -138,6 +147,12 @@ private:
             }
         }
     }
+    void visit(AstClassExtends* nodep) override {
+        if (nodep->user1SetOnce()) return;  // Process once
+        // Extend arguments were converted to super.new arguments in V3LinkDot
+        if (nodep->argsp()) pushDeletep(nodep->argsp()->unlinkFrBackWithNext());
+        iterateChildren(nodep);
+    }
     void visit(AstConst* nodep) override {
         if (nodep->user1SetOnce()) return;  // Process once
         UASSERT_OBJ(nodep->dtypep(), nodep, "No dtype");
@@ -155,9 +170,21 @@ private:
     void visit(AstCastWrap* nodep) override {
         iterateChildren(nodep);
         editDType(nodep);
-        UINFO(6, " Replace " << nodep << " w/ " << nodep->lhsp() << endl);
+        UINFO(6, " Replace " << nodep << " w/ " << nodep->lhsp());
         nodep->replaceWith(nodep->lhsp()->unlinkFrBack());
         VL_DO_DANGLING(pushDeletep(nodep), nodep);
+    }
+    void visit(AstConstraint* nodep) override {
+        iterateChildren(nodep);
+        editDType(nodep);
+        {
+            const AstClass* const classp = VN_CAST(m_modp, Class);
+            if (nodep->isKwdPure()
+                && (!classp || (!classp->isInterfaceClass() && !classp->isVirtual()))) {
+                nodep->v3error("Illegal to have 'pure constraint' in non-abstract class"
+                               " (IEEE 1800-2023 18.5.2)");
+            }
+        }
     }
     void visit(AstNodeDType* nodep) override {
         // Note some specific dtypes have unique visitors
@@ -177,6 +204,12 @@ private:
         // Move to type table as all dtype pointers must resolve there
         nodep->unlinkFrBack();  // Make non-child
         v3Global.rootp()->typeTablep()->addTypesp(nodep);
+    }
+    void visit(AstRefDType* nodep) override {
+        visitIterateNodeDType(nodep);
+        if (!nodep->typedefp()) return;  // Already checked and cleared
+        classEncapCheck(nodep, nodep->typedefp(), VN_CAST(nodep->classOrPackagep(), Class));
+        nodep->typedefp(nullptr);  // No longer needed
     }
     void visitIterateNodeDType(AstNodeDType* nodep) {
         // Rather than use dtypeChg which may make new nodes, we edit in place,
@@ -293,7 +326,7 @@ public:
 // V3WidthCommit class functions
 
 void V3WidthCommit::widthCommit(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     { WidthCommitVisitor{nodep}; }  // Destruct before checking
     V3Global::dumpCheckGlobalTree("widthcommit", 0, dumpTreeEitherLevel() >= 6);
 }

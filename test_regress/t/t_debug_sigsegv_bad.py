@@ -11,15 +11,10 @@ import vltest_bootstrap
 
 test.scenarios('vlt')
 
-if 'VERILATOR_TEST_NO_GDB' in os.environ:
-    test.skip("Skipping due to VERILATOR_TEST_NO_GDB")
-if not test.have_gdb:
-    test.skip("No gdb installed")
+test.lint(v_flags=["--debug-sigsegv"], fails=True, sanitize=0)
 
-test.lint(v_flags=["--debug-sigsegv"],
-          fails=True,
-          sanitize=0,
-          expect="""%Error: Verilator internal fault, sorry. Suggest trying --debug --gdbbt
-%Error: Command Failed.*""")
+test.file_grep(test.compile_log_filename,
+               r'%Error: Verilator internal fault, sorry. Suggest trying --debug --gdbbt')
+test.file_grep(test.compile_log_filename, r'Command Failed')
 
 test.passes()

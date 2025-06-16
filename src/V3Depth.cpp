@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -36,7 +36,7 @@ VL_DEFINE_DEBUG_FUNCTIONS;
 class DepthVisitor final : public VNVisitor {
     // NODE STATE
 
-    // STATE
+    // STATE - for current visit position (use VL_RESTORER)
     AstCFunc* m_cfuncp = nullptr;  // Current block
     AstMTaskBody* m_mtaskbodyp = nullptr;  // Current mtaskbody
     AstNode* m_stmtp = nullptr;  // Current statement
@@ -47,7 +47,7 @@ class DepthVisitor final : public VNVisitor {
     // METHODS
 
     void createDeepTemp(AstNodeExpr* nodep) {
-        UINFO(6, "  Deep  " << nodep << endl);
+        UINFO(6, "  Deep  " << nodep);
         // if (debug() >= 9) nodep->dumpTree("-  deep: ");
         AstVar* const varp = new AstVar{nodep->fileline(), VVarType::STMTTEMP,
                                         m_tempNames.get(nodep), nodep->dtypep()};
@@ -71,35 +71,35 @@ class DepthVisitor final : public VNVisitor {
     void visit(AstCFunc* nodep) override {
         VL_RESTORER(m_cfuncp);
         VL_RESTORER(m_mtaskbodyp);
-        {
-            m_cfuncp = nodep;
-            m_mtaskbodyp = nullptr;
-            m_depth = 0;
-            m_maxdepth = 0;
-            m_tempNames.reset();
-            iterateChildren(nodep);
-        }
+        VL_RESTORER(m_depth);
+        VL_RESTORER(m_maxdepth);
+        m_cfuncp = nodep;
+        m_mtaskbodyp = nullptr;
+        m_depth = 0;
+        m_maxdepth = 0;
+        m_tempNames.reset();
+        iterateChildren(nodep);
     }
     void visit(AstMTaskBody* nodep) override {
         VL_RESTORER(m_cfuncp);
         VL_RESTORER(m_mtaskbodyp);
-        {
-            m_cfuncp = nullptr;
-            m_mtaskbodyp = nodep;
-            m_depth = 0;
-            m_maxdepth = 0;
-            // We don't reset the names, as must share across tasks
-            iterateChildren(nodep);
-        }
+        VL_RESTORER(m_depth);
+        VL_RESTORER(m_maxdepth);
+        m_cfuncp = nullptr;
+        m_mtaskbodyp = nodep;
+        m_depth = 0;
+        m_maxdepth = 0;
+        // We don't reset the names, as must share across tasks
+        iterateChildren(nodep);
     }
     void visitStmt(AstNodeStmt* nodep) {
         VL_RESTORER(m_stmtp);
-        {
-            m_stmtp = nodep;
-            m_depth = 0;
-            m_maxdepth = 0;
-            iterateChildren(nodep);
-        }
+        VL_RESTORER(m_depth);
+        VL_RESTORER(m_maxdepth);
+        m_stmtp = nodep;
+        m_depth = 0;
+        m_maxdepth = 0;
+        iterateChildren(nodep);
     }
     void visit(AstNodeStmt* nodep) override { visitStmt(nodep); }
     // Operators
@@ -127,7 +127,7 @@ class DepthVisitor final : public VNVisitor {
     void needNonStaticFunc(AstNode* nodep) {
         UASSERT_OBJ(m_cfuncp, nodep, "Non-static accessor not under a function");
         if (m_cfuncp->isStatic()) {
-            UINFO(5, "Mark non-public due to " << nodep << endl);
+            UINFO(5, "Mark non-public due to " << nodep);
             m_cfuncp->isStatic(false);
         }
     }
@@ -158,7 +158,7 @@ public:
 // Depth class functions
 
 void V3Depth::depthAll(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     { DepthVisitor{nodep}; }  // Destruct before checking
     V3Global::dumpCheckGlobalTree("depth", 0, dumpTreeEitherLevel() >= 6);
 }

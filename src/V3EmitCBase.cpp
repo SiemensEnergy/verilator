@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -171,7 +171,11 @@ void EmitCBaseVisitorConst::emitCFuncDecl(const AstCFunc* funcp, const AstNodeMo
         putns(funcp, "virtual ");
     }
     emitCFuncHeader(funcp, modp, /* withScope: */ false);
-    putns(funcp, ";\n");
+    if (funcp->emptyBody() && !funcp->isLoose() && !cLinkage) {
+        putns(funcp, " {}\n");
+    } else {
+        putns(funcp, ";\n");
+    }
     if (!funcp->ifdef().empty()) putns(funcp, "#endif  // " + funcp->ifdef() + "\n");
 }
 
@@ -192,7 +196,7 @@ void EmitCBaseVisitorConst::emitVarDecl(const AstVar* nodep, bool asRef) {
         if (nodep->attrScClocked() && nodep->isReadOnly()) {
             putns(nodep, "sc_core::sc_in_clk ");
         } else {
-            if (nodep->isInoutish()) {
+            if (nodep->isInout()) {
                 putns(nodep, "sc_core::sc_inout<");
             } else if (nodep->isWritable()) {
                 putns(nodep, "sc_core::sc_out<");
@@ -213,7 +217,7 @@ void EmitCBaseVisitorConst::emitVarDecl(const AstVar* nodep, bool asRef) {
         emitDeclArrayBrackets(nodep);
         puts(";\n");
     } else if (nodep->isIO() && basicp && !basicp->isOpaque()) {
-        if (nodep->isInoutish()) {
+        if (nodep->isInout()) {
             putns(nodep, "VL_INOUT");
         } else if (nodep->isWritable()) {
             putns(nodep, "VL_OUT");
@@ -281,27 +285,43 @@ void EmitCBaseVisitorConst::emitModCUse(const AstNodeModule* modp, VUseType useT
     if (nl) puts("\n");
 }
 
+std::pair<string, FileLine*> EmitCBaseVisitorConst::textSection(const AstNodeModule* modp,
+                                                                VNType type) {
+    if (!v3Global.hasSCTextSections()) return std::make_pair("", nullptr);
+    string text;
+    FileLine* fl = nullptr;
+    int last_line = -999;
+    for (AstNode* nodep = modp->stmtsp(); nodep; nodep = nodep->nextp()) {
+        if (nodep->type() != type) continue;
+        if (const AstNodeText* const textp = VN_CAST(nodep, NodeText)) {
+            if (text.empty()) {
+                fl = textp->fileline();
+                text += "\n";
+                if (v3Global.opt.decoration())
+                    text += "\n//*** Below code from `systemc in Verilog file\n";
+            }
+            if (last_line + 1 != nodep->fileline()->lineno() && v3Global.opt.decoration())
+                text += "// From `systemc at " + nodep->fileline()->ascii() + "\n";
+            last_line = textp->fileline()->lineno();
+            text += textp->text();
+        }
+    }
+    if (!text.empty()) {
+        if (v3Global.opt.decoration()) text += "//*** Above code from `systemc in Verilog file\n";
+        text += "\n";
+        // Substitute `systemc_class_name
+        string::size_type pos;
+        while ((pos = text.find("`systemc_class_name")) != string::npos) {
+            text.replace(pos, std::strlen("`systemc_class_name"),
+                         EmitCBase::prefixNameProtect(modp));
+        }
+    }
+    return std::make_pair(text, fl);
+}
+
 void EmitCBaseVisitorConst::emitTextSection(const AstNodeModule* modp, VNType type) {
     // Short circuit if nothing to do. This can save a lot of time on large designs as this
     // function needs to traverse the entire module linearly.
-    if (!v3Global.hasSCTextSections()) return;
-
-    int last_line = -999;
-    for (AstNode* nodep = modp->stmtsp(); nodep; nodep = nodep->nextp()) {
-        if (const AstNodeText* const textp = VN_CAST(nodep, NodeText)) {
-            if (nodep->type() == type) {
-                if (last_line != nodep->fileline()->lineno()) {
-                    if (last_line < 0) {
-                        putns(nodep, "\n//*** Below code from `systemc in Verilog file\n");
-                    }
-                    putsDecoration(nodep, ifNoProtect("// From `systemc at "
-                                                      + nodep->fileline()->ascii() + "\n"));
-                    last_line = nodep->fileline()->lineno();
-                }
-                ofp()->putsNoTracking(textp->text());
-                last_line++;
-            }
-        }
-    }
-    if (last_line > 0) puts("//*** Above code from `systemc in Verilog file\n\n");
+    auto textAndFileline = textSection(modp, type);
+    if (!textAndFileline.first.empty()) ofp()->putsNoTracking(textAndFileline.first);
 }

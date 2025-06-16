@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -220,7 +220,7 @@ void EmitCFunc::displayEmit(AstNode* nodep, bool isScan) {
                 if (func != "") {
                     puts(func);
                 } else if (argp) {
-                    const bool addrof = isScan || (fmt == '@');
+                    const bool addrof = isScan || (fmt == '@') || (fmt == 'p');
                     if (addrof) puts("&(");
                     iterateConst(argp);
                     if (!addrof) emitDatap(argp);
@@ -256,8 +256,9 @@ void EmitCFunc::displayArg(AstNode* dispp, AstNode** elistp, bool isScan, const 
             return;  // LCOV_EXCL_LINE
         }
         if (argp->widthMin() > VL_VALUE_STRING_MAX_WIDTH) {
-            dispp->v3error("Exceeded limit of " + cvtToStr(VL_VALUE_STRING_MAX_WIDTH)
-                           + " bits for any $display-like arguments");
+            dispp->v3warn(E_UNSUPPORTED, "Unsupported: Exceeded limit of "
+                                             + cvtToStr(VL_VALUE_STRING_MAX_WIDTH)
+                                             + " bits for any $display-like arguments");
         }
         if (argp->widthMin() > 8 && fmtLetter == 'c') {
             // Technically legal, but surely not what the user intended.
@@ -320,7 +321,7 @@ void EmitCFunc::displayNode(AstNode* nodep, AstScopeName* scopenamep, const stri
     bool inPct = false;
     bool ignore = false;
     for (; pos != vformat.end(); ++pos) {
-        // UINFO(1, "Parse '" << *pos << "'  IP" << inPct << " List " << cvtToHex(elistp) << endl);
+        // UINFO(1, "Parse '" << *pos << "'  IP" << inPct << " List " << cvtToHex(elistp));
         if (!inPct && pos[0] == '%') {
             inPct = true;
             ignore = false;
@@ -371,6 +372,7 @@ void EmitCFunc::displayNode(AstNode* nodep, AstScopeName* scopenamep, const stri
             case 'o': displayArg(nodep, &elistp, isScan, vfmt, ignore, 'o'); break;
             case 'h':  // FALLTHRU
             case 'x': displayArg(nodep, &elistp, isScan, vfmt, ignore, 'x'); break;
+            case 'p': displayArg(nodep, &elistp, isScan, vfmt, ignore, 'p'); break;
             case 's': displayArg(nodep, &elistp, isScan, vfmt, ignore, 's'); break;
             case 'e': displayArg(nodep, &elistp, isScan, vfmt, ignore, 'e'); break;
             case 'f': displayArg(nodep, &elistp, isScan, vfmt, ignore, 'f'); break;
@@ -456,9 +458,7 @@ void EmitCFunc::emitDereference(AstNode* nodep, const string& pointer) {
 
 void EmitCFunc::emitCvtPackStr(AstNode* nodep) {
     if (const AstConst* const constp = VN_CAST(nodep, Const)) {
-        putnbs(nodep, "std::string{");
-        putsQuoted(constp->num().toString());
-        puts("}");
+        emitConstantString(constp);
     } else if (VN_IS(nodep->dtypep(), StreamDType)) {
         putnbs(nodep, "VL_CVT_PACK_STR_ND(");
         iterateAndNextConstNull(nodep);
@@ -494,11 +494,9 @@ void EmitCFunc::emitConstant(AstConst* nodep, AstVarRef* assigntop, const string
     } else if (nodep->num().isFourState()) {
         nodep->v3warn(E_UNSUPPORTED, "Unsupported: 4-state numbers in this context");
     } else if (nodep->num().isString()) {
-        putnbs(nodep, "std::string{");
-        putsQuoted(nodep->num().toString());
-        puts("}");
+        emitConstantString(nodep);
     } else if (nodep->isWide()) {
-        int upWidth = nodep->num().widthMin();
+        int upWidth = nodep->num().widthToFit();
         int chunks = 0;
         if (upWidth > EMITC_NUM_CONSTW * VL_EDATASIZE) {
             // Output e.g. 8 words in groups of e.g. 8
@@ -594,6 +592,13 @@ void EmitCFunc::emitConstant(AstConst* nodep, AstVarRef* assigntop, const string
     }
 }
 
+void EmitCFunc::emitConstantString(const AstConst* nodep) {
+    putnbs(nodep, "std::string{");
+    const string str = nodep->num().toString();
+    if (!str.empty()) putsQuoted(str);
+    puts("}");
+}
+
 void EmitCFunc::emitSetVarConstant(const string& assignString, AstConst* constp) {
     if (!constp->isWide()) {
         puts(assignString);
@@ -603,11 +608,13 @@ void EmitCFunc::emitSetVarConstant(const string& assignString, AstConst* constp)
     puts(";\n");
 }
 
-void EmitCFunc::emitVarReset(AstVar* varp) {
+void EmitCFunc::emitVarReset(AstVar* varp, bool constructing) {
+    // 'constructing' indicates that the object was just constructed, so no need to clear it also
     AstNodeDType* const dtypep = varp->dtypep()->skipRefp();
+    const string vlSelf = VSelfPointerText::replaceThis(m_useSelfForThis, "this->");
     const string varNameProtected = (VN_IS(m_modp, Class) || varp->isFuncLocal())
                                         ? varp->nameProtect()
-                                        : "vlSelf->" + varp->nameProtect();
+                                        : vlSelf + varp->nameProtect();
     if (varp->isIO() && m_modp->isTop() && optSystemC()) {
         // System C top I/O doesn't need loading, as the lower level subinst code does it.}
     } else if (varp->isParam()) {
@@ -621,6 +628,7 @@ void EmitCFunc::emitVarReset(AstVar* varp) {
                 emitSetVarConstant(varNameProtected + ".atDefault()",
                                    VN_AS(initarp->defaultp(), Const));
             }
+            if (!constructing) puts(varNameProtected + ".clear();");
             const auto& mapr = initarp->map();
             for (const auto& itr : mapr) {
                 AstNode* const valuep = itr.second->valuep();
@@ -632,6 +640,7 @@ void EmitCFunc::emitVarReset(AstVar* varp) {
                 emitSetVarConstant(varNameProtected + ".atDefault()",
                                    VN_AS(initarp->defaultp(), Const));
             }
+            if (!constructing) puts(varNameProtected + ".clear();");
             const auto& mapr = initarp->map();
             for (const auto& itr : mapr) {
                 AstNode* const valuep = itr.second->valuep();
@@ -655,25 +664,30 @@ void EmitCFunc::emitVarReset(AstVar* varp) {
             varp->v3fatalSrc("InitArray under non-arrayed var");
         }
     } else {
-        putns(varp, emitVarResetRecurse(varp, varNameProtected, dtypep, 0, ""));
+        putns(varp, emitVarResetRecurse(varp, constructing, varNameProtected, dtypep, 0, ""));
     }
 }
 
-string EmitCFunc::emitVarResetRecurse(const AstVar* varp, const string& varNameProtected,
-                                      AstNodeDType* dtypep, int depth, const string& suffix) {
+string EmitCFunc::emitVarResetRecurse(const AstVar* varp, bool constructing,
+                                      const string& varNameProtected, AstNodeDType* dtypep,
+                                      int depth, const string& suffix) {
     dtypep = dtypep->skipRefp();
     AstBasicDType* const basicp = dtypep->basicp();
     // Returns string to do resetting, empty to do nothing (which caller should handle)
     if (AstAssocArrayDType* const adtypep = VN_CAST(dtypep, AssocArrayDType)) {
         // Access std::array as C array
         const string cvtarray = (adtypep->subDTypep()->isWide() ? ".data()" : "");
-        return emitVarResetRecurse(varp, varNameProtected, adtypep->subDTypep(), depth + 1,
-                                   suffix + ".atDefault()" + cvtarray);
+        const string pre = constructing ? "" : varNameProtected + suffix + ".clear();\n";
+        return pre
+               + emitVarResetRecurse(varp, constructing, varNameProtected, adtypep->subDTypep(),
+                                     depth + 1, suffix + ".atDefault()" + cvtarray);
     } else if (AstWildcardArrayDType* const adtypep = VN_CAST(dtypep, WildcardArrayDType)) {
         // Access std::array as C array
         const string cvtarray = (adtypep->subDTypep()->isWide() ? ".data()" : "");
-        return emitVarResetRecurse(varp, varNameProtected, adtypep->subDTypep(), depth + 1,
-                                   suffix + ".atDefault()" + cvtarray);
+        const string pre = constructing ? "" : varNameProtected + suffix + ".clear();\n";
+        return pre
+               + emitVarResetRecurse(varp, constructing, varNameProtected, adtypep->subDTypep(),
+                                     depth + 1, suffix + ".atDefault()" + cvtarray);
     } else if (VN_IS(dtypep, CDType)) {
         return "";  // Constructor does it
     } else if (VN_IS(dtypep, ClassRefDType)) {
@@ -683,13 +697,17 @@ string EmitCFunc::emitVarResetRecurse(const AstVar* varp, const string& varNameP
     } else if (const AstDynArrayDType* const adtypep = VN_CAST(dtypep, DynArrayDType)) {
         // Access std::array as C array
         const string cvtarray = (adtypep->subDTypep()->isWide() ? ".data()" : "");
-        return emitVarResetRecurse(varp, varNameProtected, adtypep->subDTypep(), depth + 1,
-                                   suffix + ".atDefault()" + cvtarray);
+        const string pre = constructing ? "" : varNameProtected + suffix + ".clear();\n";
+        return pre
+               + emitVarResetRecurse(varp, constructing, varNameProtected, adtypep->subDTypep(),
+                                     depth + 1, suffix + ".atDefault()" + cvtarray);
     } else if (const AstQueueDType* const adtypep = VN_CAST(dtypep, QueueDType)) {
         // Access std::array as C array
         const string cvtarray = (adtypep->subDTypep()->isWide() ? ".data()" : "");
-        return emitVarResetRecurse(varp, varNameProtected, adtypep->subDTypep(), depth + 1,
-                                   suffix + ".atDefault()" + cvtarray);
+        const string pre = constructing ? "" : varNameProtected + suffix + ".clear();\n";
+        return pre
+               + emitVarResetRecurse(varp, constructing, varNameProtected, adtypep->subDTypep(),
+                                     depth + 1, suffix + ".atDefault()" + cvtarray);
     } else if (VN_IS(dtypep, SampleQueueDType)) {
         return "";
     } else if (const AstUnpackArrayDType* const adtypep = VN_CAST(dtypep, UnpackArrayDType)) {
@@ -698,8 +716,9 @@ string EmitCFunc::emitVarResetRecurse(const AstVar* varp, const string& varNameP
         const string ivar = "__Vi"s + cvtToStr(depth);
         const string pre = ("for (int " + ivar + " = " + cvtToStr(0) + "; " + ivar + " < "
                             + cvtToStr(adtypep->elementsConst()) + "; ++" + ivar + ") {\n");
-        const string below = emitVarResetRecurse(varp, varNameProtected, adtypep->subDTypep(),
-                                                 depth + 1, suffix + "[" + ivar + "]");
+        const string below
+            = emitVarResetRecurse(varp, constructing, varNameProtected, adtypep->subDTypep(),
+                                  depth + 1, suffix + "[" + ivar + "]");
         const string post = "}\n";
         return below.empty() ? "" : pre + below + post;
     } else if (VN_IS(dtypep, NodeUOrStructDType) && !VN_AS(dtypep, NodeUOrStructDType)->packed()) {
@@ -707,15 +726,15 @@ string EmitCFunc::emitVarResetRecurse(const AstVar* varp, const string& varNameP
         string literal;
         for (const AstMemberDType* itemp = sdtypep->membersp(); itemp;
              itemp = VN_AS(itemp->nextp(), MemberDType)) {
-            const std::string line
-                = emitVarResetRecurse(varp, varNameProtected + suffix + "." + itemp->nameProtect(),
-                                      itemp->dtypep(), depth + 1, "");
+            const std::string line = emitVarResetRecurse(
+                varp, constructing, varNameProtected + suffix + "." + itemp->nameProtect(),
+                itemp->dtypep(), depth + 1, "");
             if (!line.empty()) literal += line;
         }
         return literal;
     } else if (basicp && basicp->keyword() == VBasicDTypeKwd::STRING) {
-        // String's constructor deals with it
-        return "";
+        if (constructing) return "";  // String's constructor deals with it
+        return varNameProtected + suffix + ".clear();\n";
     } else if (basicp && basicp->isForkSync()) {
         return "";
     } else if (basicp && basicp->isProcessRef()) {
@@ -734,7 +753,9 @@ string EmitCFunc::emitVarResetRecurse(const AstVar* varp, const string& varNameP
                || varp->isFuncLocal()  // Randomization too slow
                || (basicp && basicp->isZeroInit())
                || (v3Global.opt.underlineZero() && !varp->name().empty() && varp->name()[0] == '_')
-               || (v3Global.opt.xInitial() == "fast" || v3Global.opt.xInitial() == "0"));
+               || (varp->isXTemp()
+                       ? (v3Global.opt.xAssign() != "unique")
+                       : (v3Global.opt.xInitial() == "fast" || v3Global.opt.xInitial() == "0")));
         const bool slow = !varp->isFuncLocal() && !varp->isClassMember();
         splitSizeInc(1);
         if (dtypep->isWide()) {  // Handle unpacked; not basicp->isWide
@@ -747,9 +768,21 @@ string EmitCFunc::emitVarResetRecurse(const AstVar* varp, const string& varNameP
                     out += cvtToStr(constp->num().edataWord(w)) + "U;\n";
                 }
             } else {
-                out += zeroit ? (slow ? "VL_ZERO_RESET_W(" : "VL_ZERO_W(") : "VL_RAND_RESET_W(";
+                out += zeroit ? (slow ? "VL_ZERO_RESET_W(" : "VL_ZERO_W(")
+                              : (varp->isXTemp() ? "VL_SCOPED_RAND_RESET_ASSIGN_W("
+                                                 : "VL_SCOPED_RAND_RESET_W(");
                 out += cvtToStr(dtypep->widthMin());
-                out += ", " + varNameProtected + suffix + ");\n";
+                out += ", " + varNameProtected + suffix;
+                if (!zeroit) {
+                    emitVarResetScopeHash();
+                    const uint64_t salt = VString::hashMurmur(varp->prettyName());
+                    out += ", ";
+                    out += m_classOrPackage ? m_classOrPackageHash : "__VscopeHash";
+                    out += ", ";
+                    out += std::to_string(salt);
+                    out += "ull";
+                }
+                out += ");\n";
             }
             return out;
         } else {
@@ -762,9 +795,14 @@ string EmitCFunc::emitVarResetRecurse(const AstVar* varp, const string& varNameP
             if (zeroit || (v3Global.opt.xInitialEdge() && varp->isUsedClock())) {
                 out += " = 0;\n";
             } else {
-                out += " = VL_RAND_RESET_";
+                emitVarResetScopeHash();
+                const uint64_t salt = VString::hashMurmur(varp->prettyName());
+                out += " = VL_SCOPED_RAND_RESET_";
+                if (varp->isXTemp()) out += "ASSIGN_";
                 out += dtypep->charIQWN();
-                out += "(" + cvtToStr(dtypep->widthMin()) + ");\n";
+                out += "(" + cvtToStr(dtypep->widthMin()) + ", "
+                       + (m_classOrPackage ? m_classOrPackageHash : "__VscopeHash") + ", "
+                       + std::to_string(salt) + "ull);\n";
             }
             return out;
         }
@@ -772,4 +810,16 @@ string EmitCFunc::emitVarResetRecurse(const AstVar* varp, const string& varNameP
         v3fatalSrc("Unknown node type in reset generator: " << varp->prettyTypeName());
     }
     return "";
+}
+
+void EmitCFunc::emitVarResetScopeHash() {
+    if (VL_LIKELY(m_createdScopeHash)) { return; }
+    if (m_classOrPackage) {
+        m_classOrPackageHash
+            = std::to_string(VString::hashMurmur(m_classOrPackage->name())) + "ULL";
+    } else {
+        puts(string("const uint64_t __VscopeHash = VL_MURMUR64_HASH(")
+             + (m_useSelfForThis ? "vlSelf" : "this") + "->name());\n");
+    }
+    m_createdScopeHash = true;
 }

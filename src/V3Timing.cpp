@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -233,8 +233,8 @@ class TimingSuspendableVisitor final : public VNVisitor {
             if (passFlag(parentp, depp, flag)) propagateFlags(depVxp, flag);
         }
     }
-    template <typename Predicate>
-    void propagateFlagsIf(DepVtx* const vxp, NodeFlag flag, Predicate p) {
+    template <typename T_Predicate>
+    void propagateFlagsIf(DepVtx* const vxp, NodeFlag flag, T_Predicate p) {
         auto* const parentp = vxp->nodep();
         for (V3GraphEdge& edge : vxp->outEdges()) {
             auto* const depVxp = static_cast<DepVtx*>(edge.top());
@@ -242,8 +242,8 @@ class TimingSuspendableVisitor final : public VNVisitor {
             if (p(&edge) && passFlag(parentp, depp, flag)) propagateFlagsIf(depVxp, flag, p);
         }
     }
-    template <typename Predicate>
-    void propagateFlagsReversedIf(DepVtx* const vxp, NodeFlag flag, Predicate p) {
+    template <typename T_Predicate>
+    void propagateFlagsReversedIf(DepVtx* const vxp, NodeFlag flag, T_Predicate p) {
         auto* const parentp = vxp->nodep();
         for (V3GraphEdge& edge : vxp->inEdges()) {
             auto* const depVxp = static_cast<DepVtx*>(edge.fromp());
@@ -266,7 +266,7 @@ class TimingSuspendableVisitor final : public VNVisitor {
         getNeedsProcDepVtx(nodep);
         addFlags(nodep, T_ALLOCS_PROC);
         if (VN_IS(nodep, Always)) {
-            UINFO(1, "Always does " << (nodep->needProcess() ? "" : "NOT ") << "need process\n");
+            UINFO(1, "Always does " << (nodep->needProcess() ? "" : "NOT ") << "need process");
         }
         iterateChildren(nodep);
     }
@@ -654,7 +654,7 @@ class TimingControlVisitor final : public VNVisitor {
     void addDebugInfo(AstCMethodHard* const methodp) const {
         if (v3Global.opt.protectIds()) return;
         FileLine* const flp = methodp->fileline();
-        AstCExpr* const ap = new AstCExpr{flp, '"' + flp->filename() + '"', 0};
+        AstCExpr* const ap = new AstCExpr{flp, '"' + flp->filenameEsc() + '"', 0};
         ap->dtypeSetString();
         methodp->addPinsp(ap);
         AstCExpr* const bp = new AstCExpr{flp, cvtToStr(flp->lineno()), 0};
@@ -723,8 +723,8 @@ class TimingControlVisitor final : public VNVisitor {
     void makeForkJoin(AstFork* const forkp) {
         // Create a fork sync var
         FileLine* const flp = forkp->fileline();
-        // If we're in a function, insert the sync var directly before the fork
-        AstNode* const insertBeforep = m_classp ? forkp : nullptr;
+        // Insert the sync var directly before the fork
+        AstNode* const insertBeforep = forkp;
         addCLocalScope(flp, insertBeforep);
         AstVarScope* forkVscp
             = createTemp(flp, forkp->name() + "__sync", getCreateForkSyncDTypep(), insertBeforep);
@@ -772,9 +772,9 @@ class TimingControlVisitor final : public VNVisitor {
         }
     }
     void visit(AstActive* nodep) override {
+        VL_RESTORER(m_activep);
         m_activep = nodep;
         iterateChildren(nodep);
-        m_activep = nullptr;
     }
     void visit(AstNodeProcedure* nodep) override {
         VL_RESTORER(m_procp);
@@ -933,11 +933,10 @@ class TimingControlVisitor final : public VNVisitor {
             UASSERT_OBJ(m_senExprBuilderp, nodep, "No SenExprBuilder for this scope");
             auto* const assignp = new AstAssign{flp, new AstVarRef{flp, trigvscp, VAccess::WRITE},
                                                 m_senExprBuilderp->build(sensesp).first};
-            // Put all the locals and inits before the trigger eval loop
-            for (AstVar* const varp : m_senExprBuilderp->getAndClearLocals()) {
-                nodep->addHereThisAsNext(varp);
-            }
-            for (AstNodeStmt* const stmtp : m_senExprBuilderp->getAndClearInits()) {
+            // Get the SenExprBuilder results
+            const SenExprBuilder::Results senResults = m_senExprBuilderp->getAndClearResults();
+            // Put all and inits before the trigger eval loop
+            for (AstNodeStmt* const stmtp : senResults.m_inits) {
                 nodep->addHereThisAsNext(stmtp);
             }
             // Create the trigger eval loop, which will await the evaluation step and check the
@@ -946,9 +945,7 @@ class TimingControlVisitor final : public VNVisitor {
                 flp, new AstLogNot{flp, new AstVarRef{flp, trigvscp, VAccess::READ}},
                 awaitEvalp->makeStmt()};
             // Put pre updates before the trigger check and assignment
-            for (AstNodeStmt* const stmtp : m_senExprBuilderp->getAndClearPreUpdates()) {
-                loopp->addStmtsp(stmtp);
-            }
+            for (AstNodeStmt* const stmtp : senResults.m_preUpdates) loopp->addStmtsp(stmtp);
             // Then the trigger check and assignment
             loopp->addStmtsp(assignp);
             // Let the dynamic trigger scheduler know if this trigger was set
@@ -966,9 +963,7 @@ class TimingControlVisitor final : public VNVisitor {
                 loopp->addStmtsp(awaitPostUpdatep->makeStmt());
             }
             // Put the post updates at the end of the loop
-            for (AstNodeStmt* const stmtp : m_senExprBuilderp->getAndClearPostUpdates()) {
-                loopp->addStmtsp(stmtp);
-            }
+            for (AstNodeStmt* const stmtp : senResults.m_postUpdates) loopp->addStmtsp(stmtp);
             // Finally, await the resumption step in 'act'
             AstCAwait* const awaitResumep = awaitEvalp->cloneTree(false);
             VN_AS(awaitResumep->exprp(), CMethodHard)->name("resumption");
@@ -1261,7 +1256,7 @@ public:
 // Timing class functions
 
 void V3Timing::timingAll(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     TimingSuspendableVisitor susVisitor{nodep};
     if (v3Global.usesTiming()) TimingControlVisitor{nodep};
     V3Global::dumpCheckGlobalTree("timing", 0, dumpTreeEitherLevel() >= 3);

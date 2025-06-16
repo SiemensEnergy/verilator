@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -258,7 +258,7 @@ int AstBasicDType::widthTotalBytes() const {
     }
 }
 
-bool AstBasicDType::same(const AstNode* samep) const {
+bool AstBasicDType::sameNode(const AstNode* samep) const {
     const AstBasicDType* const sp = VN_DBG_AS(samep, BasicDType);
     if (!(m == sp->m) || numeric() != sp->numeric()) return false;
     if (!rangep() && !sp->rangep()) return true;
@@ -327,6 +327,15 @@ AstNodeExpr* AstInsideRange::newAndFromInside(AstNodeExpr* exprp, AstNodeExpr* l
     return new AstLogAnd{fileline(), ap, bp};
 }
 
+void AstCReset::dump(std::ostream& str) const {
+    this->AstNode::dump(str);
+    if (constructing()) str << " [CONS]";
+}
+void AstCReset::dumpJson(std::ostream& str) const {
+    dumpJsonBoolFunc(str, constructing);
+    dumpJsonGen(str);
+}
+
 AstVar* AstClocking::ensureEventp(bool childDType) {
     if (!eventp()) {
         AstVar* const evp
@@ -366,7 +375,35 @@ void AstConsQueue::dumpJson(std::ostream& str) const {
     dumpJsonBoolFunc(str, rhsIsValue);
     dumpJsonGen(str);
 }
-
+void AstConstraint::dump(std::ostream& str) const {
+    this->AstNode::dump(str);
+    if (isExternDef()) str << " [EXTDEF]";
+    if (isExternExplicit())
+        str << " [PROTOEXP]";
+    else if (isExternProto())
+        str << " [PROTO]";
+    if (isKwdPure()) str << " [KWDPURE]";
+    if (isStatic()) str << " [STATIC]";
+}
+void AstConstraint::dumpJson(std::ostream& str) const {
+    dumpJsonBoolFunc(str, isExternDef);
+    dumpJsonBoolFunc(str, isExternExplicit);
+    dumpJsonBoolFunc(str, isExternProto);
+    dumpJsonBoolFunc(str, isKwdPure);
+    dumpJsonBoolFunc(str, isStatic);
+    if (baseOverride().isAny()) dumpJsonStr(str, "baseOverride", baseOverride().ascii());
+    dumpJsonGen(str);
+}
+void AstConstraintExpr::dump(std::ostream& str) const {
+    this->AstNode::dump(str);
+    if (isDisableSoft()) str << " [DISSOFT]";
+    if (isSoft()) str << " [SOFT]";
+}
+void AstConstraintExpr::dumpJson(std::ostream& str) const {
+    dumpJsonBoolFunc(str, isDisableSoft);
+    dumpJsonBoolFunc(str, isSoft);
+    dumpJsonGen(str);
+}
 AstConst* AstConst::parseParamLiteral(FileLine* fl, const string& literal) {
     bool success = false;
     if (literal[0] == '"') {
@@ -388,7 +425,7 @@ AstConst* AstConst::parseParamLiteral(FileLine* fl, const string& literal) {
         // the Verilog literal parser.
         char* endp;
         const int v = strtol(literal.c_str(), &endp, 0);
-        if ((v != 0) && (endp[0] == 0)) {  // C literal
+        if ((v != 0) && (v != 1) && (endp[0] == 0)) {  // C literal
             return new AstConst{fl, AstConst::Signed32{}, v};
         } else {  // Try a Verilog literal (fatals if not)
             return new AstConst{fl, AstConst::StringToParse{}, literal.c_str()};
@@ -418,7 +455,8 @@ void AstNetlist::timeprecisionMerge(FileLine*, const VTimescale& value) {
 }
 
 bool AstVar::isSigPublic() const {
-    return (m_sigPublic || (v3Global.opt.allPublic() && !isTemp() && !isGenVar()));
+    return (m_sigPublic || (v3Global.opt.allPublic() && !isTemp() && !isGenVar()))
+           && !isIfaceRef();
 }
 bool AstVar::isScQuad() const { return (isSc() && isQuad() && !isScBv() && !isScBigUint()); }
 bool AstVar::isScBv() const {
@@ -516,7 +554,7 @@ string AstVar::vlEnumType() const {
 
 string AstVar::vlEnumDir() const {
     string out;
-    if (isInoutish()) {
+    if (isInout()) {
         out = "VLVD_INOUT";
     } else if (isWritable()) {
         out = "VLVD_OUT";
@@ -541,15 +579,28 @@ string AstVar::vlEnumDir() const {
 string AstVar::vlPropDecl(const string& propName) const {
     string out;
 
+    std::vector<int> plims;  // Packed dimension limits
     std::vector<int> ulims;  // Unpacked dimension limits
-    for (const AstNodeDType* dtp = dtypep(); dtp;) {
-        dtp = dtp->skipRefp();  // Skip AstRefDType/AstTypedef, or return same node
-        if (const AstNodeArrayDType* const adtypep = VN_CAST(dtp, NodeArrayDType)) {
-            ulims.push_back(adtypep->declRange().left());
-            ulims.push_back(adtypep->declRange().right());
-            dtp = adtypep->subDTypep();
-        } else {
-            break;  // AstBasicDType - nothing below
+
+    if (const AstBasicDType* const bdtypep = basicp()) {
+        for (const AstNodeDType* dtp = dtypep(); dtp;) {
+            dtp = dtp->skipRefp();  // Skip AstRefDType/AstTypedef, or return same node
+            if (const AstNodeArrayDType* const adtypep = VN_CAST(dtp, NodeArrayDType)) {
+                if (VN_IS(dtp, PackArrayDType)) {
+                    plims.push_back(adtypep->declRange().left());
+                    plims.push_back(adtypep->declRange().right());
+                } else {
+                    ulims.push_back(adtypep->declRange().left());
+                    ulims.push_back(adtypep->declRange().right());
+                }
+                dtp = adtypep->subDTypep();
+            } else {
+                if (bdtypep->isRanged()) {
+                    plims.push_back(bdtypep->left());
+                    plims.push_back(bdtypep->right());
+                }
+                break;  // AstBasicDType - nothing below
+            }
         }
     }
 
@@ -566,21 +617,35 @@ string AstVar::vlPropDecl(const string& propName) const {
         out += "};\n";
     }
 
+    if (!plims.empty()) {
+        out += "static const int " + propName + "__plims[";
+        out += cvtToStr(plims.size());
+        out += "] = {";
+        auto it = plims.cbegin();
+        out += cvtToStr(*it);
+        while (++it != plims.cend()) {
+            out += ", ";
+            out += cvtToStr(*it);
+        }
+        out += "};\n";
+    }
+
     out += "static const VerilatedVarProps ";
     out += propName;
     out += "(";
     out += vlEnumType();  // VLVT_UINT32 etc
     out += ", " + vlEnumDir();  // VLVD_IN etc
-    if (const AstBasicDType* const bdtypep = basicp()) {
-        out += ", VerilatedVarProps::Packed()";
-        out += ", " + cvtToStr(bdtypep->left());
-        out += ", " + cvtToStr(bdtypep->right());
-    }
 
     if (!ulims.empty()) {
-        out += ", VerilatedVarProps::Unpacked()";
+        out += ", VerilatedVarProps::Unpacked{}";
         out += ", " + cvtToStr(ulims.size() / 2);
         out += ", " + propName + "__ulims";
+    }
+
+    if (!plims.empty()) {
+        out += ", VerilatedVarProps::Packed{}";
+        out += ", " + cvtToStr(plims.size() / 2);
+        out += ", " + propName + "__plims";
     }
 
     out += ");\n";
@@ -759,9 +824,40 @@ AstVar* AstVar::scVarRecurse(AstNode* nodep) {
         }
     } else if (AstArraySel* const arraySelp = VN_CAST(nodep, ArraySel)) {
         if (AstVar* const p = scVarRecurse(arraySelp->fromp())) return p;
-        if (AstVar* const p = scVarRecurse(arraySelp->bitp())) return p;
     }
     return nullptr;
+}
+
+const AstNodeDType* AstNodeDType::skipRefIterp(bool skipConst, bool skipEnum,
+                                               bool assertOn) const VL_MT_STABLE {
+    static constexpr int MAX_TYPEDEF_DEPTH = 1000;
+    const AstNodeDType* nodep = this;
+    for (int depth = 0; depth < MAX_TYPEDEF_DEPTH; ++depth) {
+        if (VN_IS(nodep, MemberDType) || VN_IS(nodep, ParamTypeDType) || VN_IS(nodep, RefDType)  //
+            || VN_IS(nodep, RequireDType)  //
+            || (VN_IS(nodep, ConstDType) && skipConst)  //
+            || (VN_IS(nodep, EnumDType) && skipEnum)) {
+            if (const AstNodeDType* subp = nodep->subDTypep()) {
+                nodep = subp;
+                continue;
+            } else {
+                if (assertOn) nodep->v3fatalSrc(nodep->prettyTypeName() << " not linked to type");
+                return nullptr;
+            }
+        }
+        return nodep;
+    }
+    nodep->v3error("Recursive type definition, or over " << MAX_TYPEDEF_DEPTH << " types deep");
+    return nullptr;
+}
+
+bool AstNodeDType::similarDType(const AstNodeDType* samep) const {
+    const AstNodeDType* nodep = this;
+    nodep = nodep->skipRefToNonRefp();
+    samep = samep->skipRefToNonRefp();
+    if (nodep == samep) return true;
+    if (nodep->type() != samep->type()) return false;
+    return nodep->similarDTypeNode(samep);
 }
 
 bool AstNodeDType::isFourstate() const { return basicp() && basicp()->isFourstate(); }
@@ -923,11 +1019,11 @@ AstNodeDType::CTypeRecursed AstNodeDType::cTypeRecurse(bool compound, bool packe
     return info;
 }
 
-uint32_t AstNodeDType::arrayUnpackedElements() {
+uint32_t AstNodeDType::arrayUnpackedElements() const {
     uint32_t entries = 1;
-    for (AstNodeDType* dtypep = this; dtypep;) {
+    for (const AstNodeDType* dtypep = this; dtypep;) {
         dtypep = dtypep->skipRefp();  // Skip AstRefDType/AstTypedef, or return same node
-        if (AstUnpackArrayDType* const adtypep = VN_CAST(dtypep, UnpackArrayDType)) {
+        if (const AstUnpackArrayDType* const adtypep = VN_CAST(dtypep, UnpackArrayDType)) {
             entries *= adtypep->elementsConst();
             dtypep = adtypep->subDTypep();
         } else {
@@ -938,11 +1034,11 @@ uint32_t AstNodeDType::arrayUnpackedElements() {
     return entries;
 }
 
-std::pair<uint32_t, uint32_t> AstNodeDType::dimensions(bool includeBasic) {
+std::pair<uint32_t, uint32_t> AstNodeDType::dimensions(bool includeBasic) const {
     // How many array dimensions (packed,unpacked) does this Var have?
     uint32_t packed = 0;
     uint32_t unpacked = 0;
-    for (AstNodeDType* dtypep = this; dtypep;) {
+    for (const AstNodeDType* dtypep = this; dtypep;) {
         dtypep = dtypep->skipRefp();  // Skip AstRefDType/AstTypedef, or return same node
         if (const AstNodeArrayDType* const adtypep = VN_CAST(dtypep, NodeArrayDType)) {
             if (VN_IS(adtypep, PackArrayDType)) {
@@ -1618,9 +1714,11 @@ void AstCellInlineScope::dumpJson(std::ostream& str) const {
     dumpJsonGen(str);
 }
 bool AstClass::isCacheableChild(const AstNode* nodep) {
-    return (VN_IS(nodep, Var) || VN_IS(nodep, Constraint) || VN_IS(nodep, EnumItemRef)
-            || (VN_IS(nodep, NodeFTask) && !VN_AS(nodep, NodeFTask)->isExternProto())
-            || VN_IS(nodep, CFunc));
+    return VN_IS(nodep, Var)
+           || (VN_IS(nodep, Constraint) && !VN_AS(nodep, Constraint)->isExternProto())
+           || VN_IS(nodep, EnumItemRef)
+           || (VN_IS(nodep, NodeFTask) && !VN_AS(nodep, NodeFTask)->isExternProto())
+           || VN_IS(nodep, CFunc);
 }
 AstClass* AstClass::baseMostClassp() {
     AstClass* basep = this;
@@ -1710,7 +1808,7 @@ void AstClocking::dumpJson(std::ostream& str) const {
 }
 void AstDisplay::dump(std::ostream& str) const {
     this->AstNodeStmt::dump(str);
-    // str << " " << displayType().ascii();
+    str << " [" << displayType().ascii() << "]";
 }
 void AstDisplay::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
 void AstEnumDType::dump(std::ostream& str) const {
@@ -1760,20 +1858,24 @@ const char* AstEnumDType::broken() const {
 void AstEnumItemRef::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
 void AstIfaceRefDType::dump(std::ostream& str) const {
     this->AstNodeDType::dump(str);
+    if (isPortDecl()) str << " [PORTDECL]";
+    if (isVirtual()) str << " [VIRT]";
     if (cellName() != "") str << " cell=" << cellName();
     if (ifaceName() != "") str << " if=" << ifaceName();
     if (modportName() != "") str << " mp=" << modportName();
     if (cellp()) {
-        str << " -> ";
+        str << " c-> ";
         cellp()->dump(str);
     } else if (ifacep()) {
-        str << " -> ";
+        str << " i-> ";
         ifacep()->dump(str);
     } else {
         str << " -> UNLINKED";
     }
 }
 void AstIfaceRefDType::dumpJson(std::ostream& str) const {
+    dumpJsonBoolFunc(str, isPortDecl);
+    dumpJsonBoolFunc(str, isVirtual);
     dumpJsonStrFunc(str, cellName);
     dumpJsonStrFunc(str, ifaceName);
     dumpJsonStrFunc(str, modportName);
@@ -1869,11 +1971,25 @@ void AstJumpLabel::dump(std::ostream& str) const {
 }
 void AstJumpLabel::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
 
+void AstMemberDType::dump(std::ostream& str) const {
+    this->AstNodeDType::dump(str);
+    if (isConstrainedRand()) str << " [CONSTRAINEDRAND]";
+    if (name() != "") str << " name=" << name();
+    if (tag() != "") str << " tag=" << tag();
+}
+
+void AstMemberDType::dumpJson(std::ostream& str) const {
+    dumpJsonBoolFunc(str, isConstrainedRand);
+    dumpJsonStrFunc(str, name);
+    dumpJsonStrFunc(str, tag);
+    dumpJsonGen(str);
+}
+
 void AstMemberDType::dumpSmall(std::ostream& str) const {
     this->AstNodeDType::dumpSmall(str);
     str << "member";
 }
-AstNodeUOrStructDType* AstMemberDType::getChildStructp() const {
+AstNodeUOrStructDType* AstMemberDType::getChildStructp() {
     AstNodeDType* subdtp = skipRefp();
     while (AstNodeArrayDType* const asubdtp = VN_CAST(subdtp, NodeArrayDType)) {
         subdtp = asubdtp->subDTypep();
@@ -1889,10 +2005,10 @@ AstMemberSel::AstMemberSel(FileLine* fl, AstNodeExpr* fromp, AstVar* varp)
     this->varp(varp);
     dtypep(varp->dtypep());
 }
-bool AstMemberSel::same(const AstNode* samep) const {
+bool AstMemberSel::sameNode(const AstNode* samep) const {
     const AstMemberSel* const sp = VN_DBG_AS(samep, MemberSel);
-    return sp != nullptr && access() == sp->access() && fromp()->isSame(sp->fromp())
-           && name() == sp->name() && varp()->same(sp->varp());
+    return sp && access() == sp->access() && fromp()->isSame(sp->fromp()) && name() == sp->name()
+           && (varp() && sp->varp() && varp()->sameNode(sp->varp()));
 }
 
 void AstMemberSel::dump(std::ostream& str) const {
@@ -1933,6 +2049,16 @@ void AstModportVarRef::dump(std::ostream& str) const {
 }
 void AstModportVarRef::dumpJson(std::ostream& str) const {
     dumpJsonStr(str, "direction", direction().ascii());
+    dumpJsonGen(str);
+}
+void AstModule::dump(std::ostream& str) const {
+    this->AstNodeModule::dump(str);
+    if (isChecker()) str << " [CHECKER]";
+    if (isProgram()) str << " [PROGRAM]";
+}
+void AstModule::dumpJson(std::ostream& str) const {
+    dumpJsonBoolFunc(str, isChecker);
+    dumpJsonBoolFunc(str, isProgram);
     dumpJsonGen(str);
 }
 void AstPin::dump(std::ostream& str) const {
@@ -2031,9 +2157,10 @@ void AstRefDType::dump(std::ostream& str) const {
         if (!s_recursing) {  // Prevent infinite dump if circular typedefs
             s_recursing = true;
             str << " -> ";
-            if (const auto subp = typedefp()) {
+            if (const auto subp = subDTypep()) {
+                if (typedefp()) str << "typedef=" << static_cast<void*>(typedefp()) << " -> ";
                 subp->dump(str);
-            } else if (const auto subp = subDTypep()) {
+            } else if (const auto subp = typedefp()) {
                 subp->dump(str);
             }
             s_recursing = false;
@@ -2196,19 +2323,35 @@ void AstNodeModule::dumpJson(std::ostream& str) const {
 }
 void AstPackageExport::dump(std::ostream& str) const {
     this->AstNode::dump(str);
-    str << " -> " << packagep();
+    if (packagep()) {
+        str << " -> " << packagep();
+    } else {
+        str << " ->UNLINKED:" << pkgName();
+    }
 }
 void AstPackageExport::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
+void AstPackageExport::pkgNameFrom() {
+    if (packagep()) m_pkgName = packagep()->name();
+}
 void AstPackageImport::dump(std::ostream& str) const {
     this->AstNode::dump(str);
-    str << " -> " << packagep();
+    if (packagep()) {
+        str << " -> " << packagep();
+    } else {
+        str << " ->UNLINKED:" << pkgName();
+    }
 }
 void AstPackageImport::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
+void AstPackageImport::pkgNameFrom() {
+    if (packagep()) m_pkgName = packagep()->name();
+}
 void AstPatMember::dump(std::ostream& str) const {
     this->AstNodeExpr::dump(str);
+    if (isConcat()) str << " [CONCAT]";
     if (isDefault()) str << " [DEFAULT]";
 }
 void AstPatMember::dumpJson(std::ostream& str) const {
+    if (isConcat()) dumpJsonBoolFunc(str, isConcat);
     if (isDefault()) dumpJsonBoolFunc(str, isDefault);
     dumpJsonGen(str);
 }
@@ -2296,16 +2439,14 @@ void AstWildcardArrayDType::dumpSmall(std::ostream& str) const {
     this->AstNodeDType::dumpSmall(str);
     str << "[*]";
 }
-bool AstWildcardArrayDType::same(const AstNode* samep) const {
+bool AstWildcardArrayDType::sameNode(const AstNode* samep) const {
     const AstWildcardArrayDType* const asamep = VN_DBG_AS(samep, WildcardArrayDType);
     if (!asamep->subDTypep()) return false;
     return (subDTypep() == asamep->subDTypep());
 }
-bool AstWildcardArrayDType::similarDType(const AstNodeDType* samep) const {
-    if (type() != samep->type()) return false;
+bool AstWildcardArrayDType::similarDTypeNode(const AstNodeDType* samep) const {
     const AstWildcardArrayDType* const asamep = VN_DBG_AS(samep, WildcardArrayDType);
-    return asamep->subDTypep()
-           && subDTypep()->skipRefp()->similarDType(asamep->subDTypep()->skipRefp());
+    return asamep->subDTypep() && subDTypep()->similarDType(asamep->subDTypep());
 }
 void AstSampleQueueDType::dumpSmall(std::ostream& str) const {
     this->AstNodeDType::dumpSmall(str);
@@ -2315,16 +2456,14 @@ void AstUnsizedArrayDType::dumpSmall(std::ostream& str) const {
     this->AstNodeDType::dumpSmall(str);
     str << "[]";
 }
-bool AstUnsizedArrayDType::same(const AstNode* samep) const {
+bool AstUnsizedArrayDType::sameNode(const AstNode* samep) const {
     const AstUnsizedArrayDType* const asamep = VN_DBG_AS(samep, UnsizedArrayDType);
     if (!asamep->subDTypep()) return false;
     return (subDTypep() == asamep->subDTypep());
 }
-bool AstUnsizedArrayDType::similarDType(const AstNodeDType* samep) const {
-    if (type() != samep->type()) return false;
+bool AstUnsizedArrayDType::similarDTypeNode(const AstNodeDType* samep) const {
     const AstUnsizedArrayDType* const asamep = VN_DBG_AS(samep, UnsizedArrayDType);
-    return asamep->subDTypep()
-           && subDTypep()->skipRefp()->similarDType(asamep->subDTypep()->skipRefp());
+    return asamep->subDTypep() && subDTypep()->similarDType(asamep->subDTypep());
 }
 void AstEmptyQueueDType::dumpSmall(std::ostream& str) const {
     this->AstNodeDType::dumpSmall(str);
@@ -2353,9 +2492,9 @@ void AstVarScope::dumpJson(std::ostream& str) const {
     dumpJsonBoolFunc(str, isTrace);
     dumpJsonGen(str);
 }
-bool AstVarScope::same(const AstNode* samep) const {
+bool AstVarScope::sameNode(const AstNode* samep) const {
     const AstVarScope* const asamep = VN_DBG_AS(samep, VarScope);
-    return varp()->same(asamep->varp()) && scopep()->same(asamep->scopep());
+    return varp()->sameNode(asamep->varp()) && scopep()->sameNode(asamep->scopep());
 }
 void AstNodeVarRef::dump(std::ostream& str) const {
     this->AstNodeExpr::dump(str);
@@ -2366,8 +2505,24 @@ void AstNodeVarRef::dumpJson(std::ostream& str) const {
     dumpJsonStr(str, "access", access().ascii());
     dumpJsonGen(str);
 }
+AstNodeVarRef* AstNodeVarRef::varRefLValueRecurse(AstNode* nodep) {
+    // Given a (possible) lvalue expression, recurse to find the being-set NodeVarRef, else nullptr
+    if (AstNodeVarRef* const anodep = VN_CAST(nodep, NodeVarRef)) return anodep;
+    if (AstNodeSel* const anodep = VN_CAST(nodep, NodeSel))
+        return varRefLValueRecurse(anodep->fromp());
+    if (AstSel* const anodep = VN_CAST(nodep, Sel)) return varRefLValueRecurse(anodep->fromp());
+    if (AstArraySel* const anodep = VN_CAST(nodep, ArraySel))
+        return varRefLValueRecurse(anodep->fromp());
+    if (AstMemberSel* const anodep = VN_CAST(nodep, MemberSel))
+        return varRefLValueRecurse(anodep->fromp());
+    if (AstStructSel* const anodep = VN_CAST(nodep, StructSel))
+        return varRefLValueRecurse(anodep->fromp());
+    return nullptr;
+}
+
 void AstVarXRef::dump(std::ostream& str) const {
     this->AstNodeVarRef::dump(str);
+    if (containsGenBlock()) str << " [GENBLK]";
     str << ".=" << dotted() << " ";
     if (inlinedDots() != "") str << " inline.=" << inlinedDots() << " - ";
     if (varScopep()) {
@@ -2379,6 +2534,7 @@ void AstVarXRef::dump(std::ostream& str) const {
     }
 }
 void AstVarXRef::dumpJson(std::ostream& str) const {
+    dumpJsonBoolFunc(str, containsGenBlock);
     dumpJsonStrFunc(str, dotted);
     dumpJsonStrFunc(str, inlinedDots);
     dumpJsonGen(str);
@@ -2398,7 +2554,7 @@ const char* AstVarRef::broken() const {
     BROKEN_RTN(!varp());
     return nullptr;
 }
-bool AstVarRef::same(const AstNode* samep) const { return same(VN_DBG_AS(samep, VarRef)); }
+bool AstVarRef::sameNode(const AstNode* samep) const { return sameNode(VN_DBG_AS(samep, VarRef)); }
 int AstVarRef::instrCount() const {
     // Account for the target of hard-coded method calls as just an address computation
     if (const AstCMethodHard* const callp = VN_CAST(backp(), CMethodHard)) {
@@ -2410,7 +2566,7 @@ int AstVarRef::instrCount() const {
 void AstVar::dump(std::ostream& str) const {
     this->AstNode::dump(str);
     if (isSc()) str << " [SC]";
-    if (isPrimaryIO()) str << (isInoutish() ? " [PIO]" : (isWritable() ? " [PO]" : " [PI]"));
+    if (isPrimaryIO()) str << (isInout() ? " [PIO]" : (isWritable() ? " [PO]" : " [PI]"));
     if (isIO()) str << " " << direction().ascii();
     if (isConst()) str << " [CONST]";
     if (isPullup()) str << " [PULLUP]";
@@ -2430,6 +2586,8 @@ void AstVar::dump(std::ostream& str) const {
         str << " [FUNC]";
     }
     if (isDpiOpenArray()) str << " [DPIOPENA]";
+    if (ignorePostWrite()) str << " [IGNPWR]";
+    if (ignoreSchedWrite()) str << " [IGNWR]";
     if (!attrClocker().unknown()) str << " [" << attrClocker().ascii() << "] ";
     if (!lifetime().isNone()) str << " [" << lifetime().ascii() << "] ";
     str << " " << varType();
@@ -2462,9 +2620,11 @@ void AstVar::dumpJson(std::ostream& str) const {
     dumpJsonBoolFunc(str, isParam);
     dumpJsonBoolFunc(str, attrScBv);
     dumpJsonBoolFunc(str, attrSFormat);
+    dumpJsonBoolFunc(str, ignorePostWrite);
+    dumpJsonBoolFunc(str, ignoreSchedWrite);
     dumpJsonGen(str);
 }
-bool AstVar::same(const AstNode* samep) const {
+bool AstVar::sameNode(const AstNode* samep) const {
     const AstVar* const asamep = VN_DBG_AS(samep, Var);
     return name() == asamep->name() && varType() == asamep->varType();
 }
@@ -2482,7 +2642,7 @@ void AstScope::dump(std::ostream& str) const {
     str << " [modp=" << nodeAddr(modp()) << "]";
 }
 void AstScope::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
-bool AstScope::same(const AstNode* samep) const {
+bool AstScope::sameNode(const AstNode* samep) const {
     const AstScope* const asamep = VN_DBG_AS(samep, Scope);
     return name() == asamep->name()
            && ((!aboveScopep() && !asamep->aboveScopep())
@@ -2543,11 +2703,18 @@ void AstClassOrPackageRef::dump(std::ostream& str) const {
     }
 }
 void AstClassOrPackageRef::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
-AstNodeModule* AstClassOrPackageRef::classOrPackagep() const {
+AstNodeModule* AstClassOrPackageRef::classOrPackageSkipp() const {
     AstNode* foundp = m_classOrPackageNodep;
-    if (auto* const anodep = VN_CAST(foundp, Typedef)) foundp = anodep->subDTypep();
-    if (auto* const anodep = VN_CAST(foundp, NodeDType)) foundp = anodep->skipRefp();
-    if (auto* const anodep = VN_CAST(foundp, ClassRefDType)) foundp = anodep->classp();
+    AstNode* lastp = nullptr;
+    while (foundp != lastp) {
+        lastp = foundp;
+        if (AstNodeDType* const anodep = VN_CAST(foundp, NodeDType)) {
+            foundp = anodep->skipRefOrNullp();
+        }
+        if (AstTypedef* const anodep = VN_CAST(foundp, Typedef)) foundp = anodep->subDTypep();
+        if (AstClassRefDType* const anodep = VN_CAST(foundp, ClassRefDType))
+            foundp = anodep->classp();
+    }
     return VN_CAST(foundp, NodeModule);
 }
 
@@ -2591,6 +2758,8 @@ void AstNodeFTask::dump(std::ostream& str) const {
     if (dpiImport()) str << " [DPII]";
     if (dpiOpenChild()) str << " [DPIOPENCHILD]";
     if (dpiOpenParent()) str << " [DPIOPENPARENT]";
+    if (isExternDef()) str << " [EXTDEF]";
+    if (isExternProto()) str << " [EXTPROTO]";
     if (prototype()) str << " [PROTOTYPE]";
     if (pureVirtual()) str << " [PUREVIRTUAL]";
     if (recursive()) str << " [RECURSIVE]";
@@ -2611,7 +2780,7 @@ bool AstNodeFTask::getPurityRecurse() const {
     // or any write reference to a variable that isn't an automatic function local.
     for (AstNode* stmtp = this->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
         if (const AstVar* const varp = VN_CAST(stmtp, Var)) {
-            if (varp->isInoutish() || varp->isRef()) return false;
+            if (varp->isInoutOrRef()) return false;
         }
         if (!stmtp->isPure()) return false;
         if (stmtp->exists([](const AstNodeVarRef* const varrefp) {
@@ -2628,6 +2797,8 @@ void AstNodeFTask::dumpJson(std::ostream& str) const {
     dumpJsonBoolFunc(str, dpiImport);
     dumpJsonBoolFunc(str, dpiOpenChild);
     dumpJsonBoolFunc(str, dpiOpenParent);
+    dumpJsonBoolFunc(str, isExternDef);
+    dumpJsonBoolFunc(str, isExternProto);
     dumpJsonBoolFunc(str, prototype);
     dumpJsonBoolFunc(str, recursive);
     dumpJsonBoolFunc(str, taskPublic);
@@ -2762,15 +2933,17 @@ void AstCFile::dumpJson(std::ostream& str) const {
 void AstCFunc::dump(std::ostream& str) const {
     this->AstNode::dump(str);
     if (slow()) str << " [SLOW]";
-    if (dpiPure()) str << " [DPIPURE]";
     if (isStatic()) str << " [STATIC]";
+    if (dpiContext()) str << " [DPICTX]";
     if (dpiExportDispatcher()) str << " [DPIED]";
     if (dpiExportImpl()) str << " [DPIEI]";
     if (dpiImportPrototype()) str << " [DPIIP]";
     if (dpiImportWrapper()) str << " [DPIIW]";
-    if (dpiContext()) str << " [DPICTX]";
+    if (dpiPure()) str << " [DPIPURE]";
     if (isConstructor()) str << " [CTOR]";
     if (isDestructor()) str << " [DTOR]";
+    if (isMethod()) str << " [METHOD]";
+    if (isLoose()) str << " [LOOSE]";
     if (isVirtual()) str << " [VIRT]";
     if (isCoroutine()) str << " [CORO]";
     if (needProcess()) str << " [NPRC]";
@@ -2865,10 +3038,12 @@ void AstCMethodHard::setPurity() {
                                                           {"r_xor", true},
                                                           {"renew", false},
                                                           {"renew_copy", false},
+                                                          {"resize", false},
                                                           {"resume", false},
                                                           {"reverse", false},
                                                           {"rsort", false},
-                                                          {"set", false},
+                                                          {"setBit", false},
+                                                          {"setWord", false},
                                                           {"set_randmode", false},
                                                           {"shuffle", false},
                                                           {"size", true},
@@ -2896,6 +3071,15 @@ void AstCMethodHard::setPurity() {
     auto isPureIt = isPureMethod.find(name());
     UASSERT_OBJ(isPureIt != isPureMethod.end(), this, "Unknown purity of method " + name());
     m_pure = isPureIt->second;
+    if (!m_pure) return;
+    if (!fromp()->isPure()) m_pure = false;
+    if (!m_pure) return;
+    for (AstNodeExpr* argp = pinsp(); argp; argp = VN_AS(argp->nextp(), NodeExpr)) {
+        if (!argp->isPure()) {
+            m_pure = false;
+            return;
+        }
+    }
 }
 
 void AstCUse::dump(std::ostream& str) const {
@@ -2926,7 +3110,7 @@ AstAlways* AstAssignW::convertToAlways() {
     if (hasTimingControl) {
         // If there's a timing control, put the assignment in a fork..join_none. This process won't
         // get marked as suspendable and thus will be scheduled normally
-        auto* forkp = new AstFork{flp, "", bodysp};
+        AstFork* forkp = new AstFork{flp, "", bodysp};
         forkp->joinType(VJoinType::JOIN_NONE);
         bodysp = forkp;
     }

@@ -3,7 +3,7 @@
 //
 // Code available from: https://verilator.org
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you can
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you can
 // redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -39,8 +39,8 @@
 #endif
 
 // clang-format off
-#include "verilatedos.h"
 #include "verilated_config.h"
+#include "verilatedos.h"
 #if VM_SC
 # include "verilated_sc.h"  // Get SYSTEMC_VERSION and time declarations
 #endif
@@ -100,7 +100,7 @@ class VerilatedFstC;
 class VerilatedFstSc;
 class VerilatedScope;
 class VerilatedScopeNameMap;
-template <class, class>
+template <typename, typename>
 class VerilatedTrace;
 class VerilatedTraceBaseC;
 class VerilatedTraceConfig;
@@ -113,6 +113,7 @@ class VerilatedVcdSc;
 //=========================================================================
 // Basic types
 
+// Type letters
 // clang-format off
 //    P                     // Packed data of bit type (C/S/I/Q/W)
 using CData = uint8_t;    ///< Data representing 'bit' of 1-8 packed bits
@@ -124,6 +125,8 @@ using WData = EData;        ///< Data representing >64 packed bits (used as poin
 //    F     = float;        // No typedef needed; Verilator uses float
 //    D     = double;       // No typedef needed; Verilator uses double
 //    N     = std::string;  // No typedef needed; Verilator uses string
+//    U     = VlUnpacked;
+//    R     = VlQueue;
 // clang-format on
 
 using WDataInP = const WData*;  ///< 'bit' of >64 packed bits as array input to a function
@@ -174,6 +177,14 @@ enum class VerilatedAssertDirectiveType : uint8_t {
 };
 using VerilatedAssertType_t = std::underlying_type<VerilatedAssertType>::type;
 using VerilatedAssertDirectiveType_t = std::underlying_type<VerilatedAssertDirectiveType>::type;
+
+// Type trait: whether T is a user-defined custom struct
+template <typename>
+struct VlIsCustomStruct : public std::false_type {};
+
+// Type trait: used to detect if array element is a custom struct (e.g. for struct arrays)
+template <typename T>
+struct VlContainsCustomStruct : VlIsCustomStruct<T> {};
 
 //=============================================================================
 // Utility functions
@@ -300,7 +311,7 @@ public:
 
 private:
     // The following are for use by Verilator internals only
-    template <class, class>
+    template <typename, typename>
     friend class VerilatedTrace;
     // Run-time trace configuration requested by this model
     virtual std::unique_ptr<VerilatedTraceConfig> traceConfig() const;
@@ -546,9 +557,9 @@ public:
     /// 1 = Set all bits to one
     /// 2 = Randomize all bits
     void randReset(int val) VL_MT_SAFE;
-    /// Set default random seed, 0 = seed it automatically
-    int randSeed() const VL_MT_SAFE { return m_s.m_randSeed; }
     /// Return default random seed
+    int randSeed() const VL_MT_SAFE { return m_s.m_randSeed; }
+    /// Set default random seed, 0 = seed it automatically
     void randSeed(int val) VL_MT_SAFE;
 
     /// Return statistic: CPU time delta from model created until now
@@ -714,6 +725,7 @@ private:
     VerilatedVarNameMap* m_varsp = nullptr;  // Variable map
     const char* m_namep = nullptr;  // Scope name (Slowpath)
     const char* m_identifierp = nullptr;  // Identifier of scope (with escapes removed)
+    const char* m_defnamep = nullptr;  // Definition name (SCOPE_MODULE only)
     int8_t m_timeunit = 0;  // Timeunit in negative power-of-10
     Type m_type = SCOPE_OTHER;  // Type of the scope
 
@@ -721,13 +733,15 @@ public:  // But internals only - called from VerilatedModule's
     VerilatedScope() = default;
     ~VerilatedScope();
     void configure(VerilatedSyms* symsp, const char* prefixp, const char* suffixp,
-                   const char* identifier, int8_t timeunit, const Type& type) VL_MT_UNSAFE;
+                   const char* identifier, const char* defnamep, int8_t timeunit,
+                   const Type& type) VL_MT_UNSAFE;
     void exportInsert(int finalize, const char* namep, void* cb) VL_MT_UNSAFE;
     void varInsert(int finalize, const char* namep, void* datap, bool isParam,
-                   VerilatedVarType vltype, int vlflags, int dims, ...) VL_MT_UNSAFE;
+                   VerilatedVarType vltype, int vlflags, int udims, int pdims, ...) VL_MT_UNSAFE;
     // ACCESSORS
     const char* name() const VL_MT_SAFE_POSTINIT { return m_namep; }
     const char* identifier() const VL_MT_SAFE_POSTINIT { return m_identifierp; }
+    const char* defname() const VL_MT_SAFE_POSTINIT { return m_defnamep; }
     int8_t timeunit() const VL_MT_SAFE_POSTINIT { return m_timeunit; }
     VerilatedSyms* symsp() const VL_MT_SAFE_POSTINIT { return m_symsp; }
     VerilatedVar* varFind(const char* namep) const VL_MT_SAFE_POSTINIT;

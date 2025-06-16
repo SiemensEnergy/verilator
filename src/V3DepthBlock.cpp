@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -33,7 +33,7 @@ VL_DEFINE_DEBUG_FUNCTIONS;
 class DepthBlockVisitor final : public VNVisitor {
     // NODE STATE
 
-    // STATE
+    // STATE - for current visit position (use VL_RESTORER)
     const AstNodeModule* m_modp = nullptr;  // Current module
     const AstCFunc* m_cfuncp = nullptr;  // Current function
     int m_depth = 0;  // How deep in an expression
@@ -60,7 +60,7 @@ class DepthBlockVisitor final : public VNVisitor {
             funcp->argTypes(EmitCBase::symClassVar());
             callp->argTypes("vlSymsp");
         }
-        UINFO(6, "      New " << callp << endl);
+        UINFO(6, "      New " << callp);
         relinkHandle.relink(callp->makeStmt());
         // Done
         return funcp;
@@ -68,30 +68,26 @@ class DepthBlockVisitor final : public VNVisitor {
 
     // VISITORS
     void visit(AstNodeModule* nodep) override {
-        UINFO(4, " MOD   " << nodep << endl);
+        UINFO(4, " MOD   " << nodep);
         VL_RESTORER(m_modp);
-        {
-            m_modp = nodep;
-            m_deepNum = 0;
-            iterateChildren(nodep);
-        }
+        m_modp = nodep;
+        m_deepNum = 0;
+        iterateChildren(nodep);
     }
     void visit(AstCFunc* nodep) override {
         // We recurse into this.
         VL_RESTORER(m_depth);
         VL_RESTORER(m_cfuncp);
-        {
-            m_depth = 0;
-            m_cfuncp = nodep;
-            iterateChildren(nodep);
-        }
+        m_depth = 0;
+        m_cfuncp = nodep;
+        iterateChildren(nodep);
     }
     void visit(AstStmtExpr* nodep) override {}  // Stop recursion after introducing new function
     void visit(AstJumpBlock*) override {}  // Stop recursion as can't break up across a jump
     void visit(AstNodeStmt* nodep) override {
-        m_depth++;
+        ++m_depth;
         if (m_depth > v3Global.opt.compLimitBlocks()) {  // Already done
-            UINFO(4, "DeepBlocks " << m_depth << " " << nodep << endl);
+            UINFO(4, "DeepBlocks " << m_depth << " " << nodep);
             const AstNode* const backp = nodep->backp();  // Only for debug
             if (debug() >= 9) backp->dumpTree("-   pre : ");
             AstCFunc* const funcp = createDeepFunc(nodep);
@@ -101,7 +97,7 @@ class DepthBlockVisitor final : public VNVisitor {
         } else {
             iterateChildren(nodep);
         }
-        m_depth--;
+        --m_depth;
     }
 
     void visit(AstNodeExpr*) override {}  // Accelerate
@@ -119,7 +115,7 @@ public:
 // DepthBlock class functions
 
 void V3DepthBlock::depthBlockAll(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     { DepthBlockVisitor{nodep}; }  // Destruct before checking
     V3Global::dumpCheckGlobalTree("deepblock", 0, dumpTreeEitherLevel() >= 3);
 }

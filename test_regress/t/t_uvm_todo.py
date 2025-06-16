@@ -8,20 +8,11 @@
 # SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
 import vltest_bootstrap
-import multiprocessing
 
 test.scenarios('vlt')
 
-test.compile(
-    v_flags2=[
-        "--timing",  #
-        "-Wno-PKGNODECL -Wno-IMPLICITSTATIC -Wno-MISINDENT",
-        "-Wno-CASEINCOMPLETE -Wno-CASTCONST -Wno-SYMRSVDWORD -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC",
-        "-Wno-REALCVT"  # TODO note mostly related to $realtime - could suppress or fix upstream
-    ],
-    make_flags=['-k -j ' + str(multiprocessing.cpu_count())],
-    verilator_make_gmake=False)
-
-#test.execute()
+test.compile(v_flags2=["--timing", "+incdir+t/uvm", "t/t_uvm_todo.vlt", "-j 0"],
+             make_flags=['-k'],
+             verilator_make_gmake=False)
 
 test.passes()

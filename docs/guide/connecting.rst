@@ -1,4 +1,4 @@
-.. Copyright 2003-2024 by Wilson Snyder.
+.. Copyright 2003-2025 by Wilson Snyder.
 .. SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
 .. _Connecting:
@@ -73,8 +73,8 @@ often inlined into the root scope) will need to be updated as follows:
     :code:`$` character, i.e.: :code:`rootp` points to the Verilated
     SystemVerilog :code:`$root` scope.
 
-  * Replace :code:`modelp->internal->member->lookup` references with
-    :code:`modelp->rootp->internal->member->lookup` references, which
+  * Replace :code:`modelp->internal->member` references with
+    :code:`modelp->rootp->internal->member` references, which
     contain one additional indirection via the :code:`rootp` pointer.
 
 

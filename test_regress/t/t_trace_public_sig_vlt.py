@@ -19,14 +19,14 @@ out_filename = test.obj_dir + "/V" + test.name + ".tree.json"
 test.compile(make_top_shell=False,
              make_main=False,
              v_flags2=[
-                 "--trace --exe", test.pli_filename,
+                 "--trace-vcd --exe", test.pli_filename,
                  test.t_dir + "/t_trace_public_sig.vlt --no-json-edit-nums"
              ])
 
 if test.vlt_all:
     test.file_grep(
         out_filename,
-        r'{"type":"VAR","name":"GSR",.*"loc":"f,47:[^"]*",.*"origName":"GSR",.*"isSigPublic":true,.*"dtypeName":"logic",.*"isSigUserRdPublic":true.*"isSigUserRWPublic":true'
+        r'{"type":"VAR","name":"GSR",.*"loc":"\w,47:[^"]*",.*"origName":"GSR",.*"isSigPublic":true,.*"dtypeName":"logic",.*"isSigUserRdPublic":true.*"isSigUserRWPublic":true'
     )
 
 test.execute()

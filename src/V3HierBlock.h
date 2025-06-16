@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -92,6 +92,7 @@ public:
     ~V3HierBlock() VL_MT_DISABLED;
 
     void addParent(V3HierBlock* parentp) { m_parents.insert(parentp); }
+    bool hasParent() const { return !m_parents.empty(); }
     void addChild(V3HierBlock* childp) { m_children.insert(childp); }
     bool hasChild() const { return !m_children.empty(); }
     const HierBlockSet& parents() const { return m_parents; }

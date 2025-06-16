@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -62,6 +62,7 @@ class V3CCtorsBuilder final {
         AstCFunc* const funcp = new AstCFunc{m_modp->fileline(), funcName, nullptr, "void"};
         funcp->isStatic(false);
         funcp->isLoose(!m_type.isClass());
+        funcp->keepIfEmpty(true);  // TODO relax
         funcp->declPrivate(true);
         funcp->slow(!m_type.isClass());  // Only classes construct on fast path
         string preventUnusedStmt;
@@ -113,7 +114,7 @@ public:
                     callp->argTypes("vlSymsp");
                 } else {
                     if (m_type.isCoverage()) callp->argTypes("first");
-                    callp->selfPointer(VSelfPointerText{VSelfPointerText::This()});
+                    callp->selfPointer(VSelfPointerText{VSelfPointerText::This{}});
                 }
                 rootFuncp->addStmtsp(callp->makeStmt());
             }
@@ -131,12 +132,22 @@ private:
 class CCtorsVisitor final : public VNVisitor {
     // NODE STATE
 
-    // STATE
+    // STATE - for current visit position (use VL_RESTORER)
     AstNodeModule* m_modp = nullptr;  // Current module
     AstCFunc* m_cfuncp = nullptr;  // Current function
     V3CCtorsBuilder* m_varResetp = nullptr;  // Builder of _ctor_var_reset
 
-    // VISITs
+    // METHODS
+    static void insertSc(AstCFunc* cfuncp, const AstNodeModule* modp, VNType type) {
+        auto textAndFileline = EmitCBaseVisitorConst::textSection(modp, type);
+        if (!textAndFileline.first.empty()) {
+            AstTextBlock* const newp
+                = new AstTextBlock{textAndFileline.second, textAndFileline.first, false, false};
+            cfuncp->addStmtsp(newp);
+        }
+    }
+
+    // VISITORS
     void visit(AstNodeModule* nodep) override {
         VL_RESTORER(m_modp);
         VL_RESTORER(m_varResetp);
@@ -166,6 +177,7 @@ class CCtorsVisitor final : public VNVisitor {
             // If can be referred to by base pointer, need virtual delete
             funcp->isVirtual(classp->isExtended());
             funcp->slow(false);
+            insertSc(funcp, classp, VNType::atScDtor);
             classp->addStmtsp(funcp);
         }
     }
@@ -176,18 +188,16 @@ class CCtorsVisitor final : public VNVisitor {
         m_varResetp = nullptr;
         m_cfuncp = nodep;
         iterateChildren(nodep);
+        if (nodep->name() == "new") insertSc(nodep, m_modp, VNType::atScCtor);
     }
     void visit(AstVar* nodep) override {
-        if (!nodep->isIfaceParent() && !nodep->isIfaceRef() && !nodep->noReset()
-            && !nodep->isParam() && !nodep->isStatementTemp()
-            && !(nodep->basicp()
-                 && (nodep->basicp()->isEvent() || nodep->basicp()->isTriggerVec()))) {
+        if (nodep->needsCReset()) {
             if (m_varResetp) {
-                const auto vrefp = new AstVarRef{nodep->fileline(), nodep, VAccess::WRITE};
-                m_varResetp->add(new AstCReset{nodep->fileline(), vrefp});
+                AstVarRef* const vrefp = new AstVarRef{nodep->fileline(), nodep, VAccess::WRITE};
+                m_varResetp->add(new AstCReset{nodep->fileline(), vrefp, true});
             } else if (m_cfuncp) {
-                const auto vrefp = new AstVarRef{nodep->fileline(), nodep, VAccess::WRITE};
-                nodep->addNextHere(new AstCReset{nodep->fileline(), vrefp});
+                AstVarRef* const vrefp = new AstVarRef{nodep->fileline(), nodep, VAccess::WRITE};
+                nodep->addNextHere(new AstCReset{nodep->fileline(), vrefp, true});
             }
         }
     }
@@ -210,6 +220,7 @@ void V3CCtors::evalAsserts() {
     funcp->declPrivate(true);
     funcp->isStatic(false);
     funcp->isLoose(true);
+    funcp->keepIfEmpty(true);
     funcp->slow(false);
     funcp->ifdef("VL_DEBUG");
     modp->addStmtsp(funcp);
@@ -224,7 +235,7 @@ void V3CCtors::evalAsserts() {
                         // if (signal & CONST(upper_non_clean_mask)) { fail; }
                         AstVarRef* const vrefp
                             = new AstVarRef{varp->fileline(), varp, VAccess::READ};
-                        vrefp->selfPointer(VSelfPointerText{VSelfPointerText::This()});
+                        vrefp->selfPointer(VSelfPointerText{VSelfPointerText::This{}});
                         AstNodeExpr* newp = vrefp;
                         if (varp->isWide()) {
                             newp = new AstWordSel{
@@ -249,7 +260,7 @@ void V3CCtors::evalAsserts() {
 }
 
 void V3CCtors::cctorsAll() {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     evalAsserts();
     { CCtorsVisitor{v3Global.rootp()}; }
     V3Global::dumpCheckGlobalTree("cctors", 0, dumpTreeEitherLevel() >= 3);

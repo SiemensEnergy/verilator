@@ -3,7 +3,7 @@
 //
 // Code available from: https://verilator.org
 //
-// Copyright 2001-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2001-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -47,7 +47,7 @@ static double timescaleToDouble(const char* unitp) VL_PURE {
     // On error so we allow just "ns" to return 1e-9.
     if (value == 0.0 && endp == unitp) value = 1;
     unitp = endp;
-    for (; *unitp && std::isspace(*unitp); unitp++) {}
+    for (; *unitp && std::isspace(*unitp); ++unitp) {}
     switch (*unitp) {
     case 's': value *= 1e0; break;
     case 'm': value *= 1e-3; break;

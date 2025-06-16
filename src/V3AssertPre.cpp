@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2005-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2005-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -45,7 +45,8 @@ private:
     AstNodeModule* m_modp = nullptr;  // Current module
     AstClocking* m_clockingp = nullptr;  // Current clocking block
     // Reset each module:
-    AstClocking* m_defaultClockingp = nullptr;  // Default clocking for the current module
+    AstClocking* m_defaultClockingp = nullptr;  // Default clocking for current module
+    AstDefaultDisable* m_defaultDisablep = nullptr;  // Default disable for current module
     // Reset each assertion:
     AstSenItem* m_senip = nullptr;  // Last sensitivity
     // Reset each always:
@@ -94,10 +95,10 @@ private:
         if (const AstVarRef* varrefp = VN_CAST(nodep, VarRef)) {
             if (varp == varrefp->varp()) nodep->replaceWith(exprp->cloneTree(false));
         }
-        replaceVarRefsWithExprRecurse(nodep->op1p(), varp, exprp);
-        replaceVarRefsWithExprRecurse(nodep->op2p(), varp, exprp);
-        replaceVarRefsWithExprRecurse(nodep->op3p(), varp, exprp);
-        replaceVarRefsWithExprRecurse(nodep->op4p(), varp, exprp);
+        if (AstNode* const refp = nodep->op1p()) replaceVarRefsWithExprRecurse(refp, varp, exprp);
+        if (AstNode* const refp = nodep->op2p()) replaceVarRefsWithExprRecurse(refp, varp, exprp);
+        if (AstNode* const refp = nodep->op3p()) replaceVarRefsWithExprRecurse(refp, varp, exprp);
+        if (AstNode* const refp = nodep->op4p()) replaceVarRefsWithExprRecurse(refp, varp, exprp);
     }
     AstPropSpec* substitutePropertyCall(AstPropSpec* nodep) {
         if (AstFuncRef* const funcrefp = VN_CAST(nodep->propp(), FuncRef)) {
@@ -155,7 +156,7 @@ private:
     void visit(AstClocking* const nodep) override {
         VL_RESTORER(m_clockingp);
         m_clockingp = nodep;
-        UINFO(8, "   CLOCKING" << nodep << endl);
+        UINFO(8, "   CLOCKING" << nodep);
         iterateChildren(nodep);
         if (nodep->eventp()) nodep->addNextHere(nodep->eventp()->unlinkFrBack());
         VL_DO_DANGLING(pushDeletep(nodep->unlinkFrBack()), nodep);
@@ -294,7 +295,7 @@ private:
                                   popp->makeStmt()});
             }
         } else {
-            nodep->v3fatal("Invalid direction");
+            nodep->v3fatalSrc("Invalid direction");
         }
         VL_DO_DANGLING(pushDeletep(nodep->unlinkFrBack()), nodep);
     }
@@ -358,9 +359,9 @@ private:
         }
     }
     void visit(AstNodeVarRef* nodep) override {
-        UINFO(8, " -varref:  " << nodep << endl);
-        UINFO(8, " -varref-var-back:  " << nodep->varp()->backp() << endl);
-        UINFO(8, " -varref-var-user1:  " << nodep->varp()->user1p() << endl);
+        UINFO(8, " -varref:  " << nodep);
+        UINFO(8, " -varref-var-back:  " << nodep->varp()->backp());
+        UINFO(8, " -varref-var-user1:  " << nodep->varp()->user1p());
         if (AstClockingItem* const itemp = VN_CAST(
                 nodep->varp()->user1p() ? nodep->varp()->user1p() : nodep->varp()->firstAbovep(),
                 ClockingItem)) {
@@ -368,12 +369,12 @@ private:
 
             // ensure linking still works, this has to be done only once
             if (AstVarXRef* xrefp = VN_CAST(nodep, VarXRef)) {
-                UINFO(8, " -clockvarxref-in:  " << xrefp << endl);
+                UINFO(8, " -clockvarxref-in:  " << xrefp);
                 string dotted = xrefp->dotted();
                 const size_t dotPos = dotted.rfind('.');
                 dotted.erase(dotPos, string::npos);
                 xrefp->dotted(dotted);
-                UINFO(8, " -clockvarxref-out: " << xrefp << endl);
+                UINFO(8, " -clockvarxref-out: " << xrefp);
                 m_xrefsp.emplace_back(xrefp);
             }
 
@@ -522,6 +523,21 @@ private:
         VL_DO_DANGLING(pushDeletep(nodep), nodep);
     }
 
+    void visit(AstDefaultDisable* nodep) override {
+        // Done with these
+        VL_DO_DANGLING(pushDeletep(nodep->unlinkFrBack()), nodep);
+    }
+    void visit(AstInferredDisable* nodep) override {
+        AstNode* newp;
+        if (m_defaultDisablep) {
+            newp = m_defaultDisablep->condp()->cloneTreePure(true);
+        } else {
+            newp = new AstConst{nodep->fileline(), AstConst::BitFalse{}};
+        }
+        nodep->replaceWith(newp);
+        VL_DO_DANGLING(pushDeletep(nodep), nodep);
+    }
+
     void visit(AstPropSpec* nodep) override {
         nodep = substitutePropertyCall(nodep);
         // No need to iterate the body, once replace will get iterated
@@ -530,6 +546,9 @@ private:
             nodep->v3warn(E_UNSUPPORTED, "Unsupported: Only one PSL clock allowed per assertion");
         // Block is the new expression to evaluate
         AstNodeExpr* blockp = VN_AS(nodep->propp()->unlinkFrBack(), NodeExpr);
+        if (!nodep->disablep() && m_defaultDisablep) {
+            nodep->disablep(m_defaultDisablep->condp()->cloneTreePure(true));
+        }
         if (AstNodeExpr* const disablep = nodep->disablep()) {
             m_disablep = disablep->cloneTreePure(false);
             if (VN_IS(nodep->backp(), Cover)) {
@@ -547,6 +566,7 @@ private:
     }
     void visit(AstNodeModule* nodep) override {
         VL_RESTORER(m_defaultClockingp);
+        VL_RESTORER(m_defaultDisablep);
         VL_RESTORER(m_modp);
         m_defaultClockingp = nullptr;
         nodep->foreach([&](AstClocking* const clockingp) {
@@ -557,6 +577,14 @@ private:
                 }
                 m_defaultClockingp = clockingp;
             }
+        });
+        m_defaultDisablep = nullptr;
+        nodep->foreach([&](AstDefaultDisable* const disablep) {
+            if (m_defaultDisablep) {
+                disablep->v3error("Only one 'default disable iff' allowed per module"
+                                  " (IEEE 1800-2023 16.15)");
+            }
+            m_defaultDisablep = disablep;
         });
         m_modp = nodep;
         iterateChildren(nodep);
@@ -585,7 +613,7 @@ public:
 // Top Assert class
 
 void V3AssertPre::assertPreAll(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     { AssertPreVisitor{nodep}; }  // Destruct before checking
     V3Global::dumpCheckGlobalTree("assertpre", 0, dumpTreeEitherLevel() >= 3);
 }

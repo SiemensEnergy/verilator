@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -183,6 +183,19 @@ public:
         , m_filenameno{singleton().nameToNumber(filename)}
         , m_waive{false}
         , m_contentLineno{0} {}
+    explicit FileLine(const FileLine& from)
+        : m_msgEnIdx{from.m_msgEnIdx}
+        , m_filenameno{from.m_filenameno}
+        , m_waive{from.m_waive}
+        , m_contentLineno{from.m_contentLineno}
+        , m_firstLineno{from.m_firstLineno}
+        , m_firstColumn{from.m_firstColumn}
+        , m_lastLineno{from.m_lastLineno}
+        , m_lastColumn{from.m_lastColumn}
+        , m_contentp{from.m_contentp}
+        , m_parent{from.m_parent} {
+        if (m_contentp) m_contentp->refInc();
+    }
     explicit FileLine(FileLine* fromp)
         : m_msgEnIdx{fromp->m_msgEnIdx}
         , m_filenameno{fromp->m_filenameno}
@@ -255,6 +268,8 @@ public:
     string asciiLineCol() const;
     int filenameno() const VL_MT_SAFE { return m_filenameno; }
     string filename() const VL_MT_SAFE { return singleton().numberToName(filenameno()); }
+    // Filename with C string escapes
+    string filenameEsc() const VL_MT_SAFE { return VString::quoteBackslash(filename()); }
     bool filenameIsGlobal() const VL_MT_SAFE {
         return (filename() == commandLineFilename() || filename() == builtInFilename());
     }
@@ -275,6 +290,7 @@ public:
             warnOn(V3ErrorCode::WIDTHEXPAND, flag);
             warnOn(V3ErrorCode::WIDTHXZEXPAND, flag);
         }
+        if (code == V3ErrorCode::E_UNSUPPORTED) warnOn(V3ErrorCode::COVERIGN, flag);
         m_msgEnIdx = singleton().msgEnSetBit(m_msgEnIdx, code, flag);
     }
     void warnOff(V3ErrorCode code, bool flag) { warnOn(code, !flag); }
@@ -285,7 +301,6 @@ public:
     void warnUnusedOff(bool flag);
     void warnStateFrom(const FileLine& from) { m_msgEnIdx = from.m_msgEnIdx; }
     void warnResetDefault() { warnStateFrom(defaultFileLine()); }
-    bool lastWarnWaived() const { return m_waive; }
 
     // Specific flag ACCESSORS/METHODS
     bool celldefineOn() const { return msgEn().test(V3ErrorCode::I_CELLDEFINE); }
@@ -340,7 +355,6 @@ public:
     /// When building an error, prefix for printing secondary information
     /// from a different FileLine than the original error
     string warnOther() const VL_REQUIRES(V3Error::s().m_mutex);
-    string warnOtherStandalone() const VL_EXCLUDES(V3Error::s().m_mutex) VL_MT_UNSAFE;
     /// When building an error, current location in include etc
     /// If not used in a given error, automatically pasted at end of error
     string warnContextPrimary() const VL_REQUIRES(V3Error::s().m_mutex) {

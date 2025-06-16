@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -245,8 +245,8 @@ class CodeMotionAnalysisVisitor final : public VNVisitorConst {
     }
 
     void analyzeNode(AstNode* nodep) {
-        // If an impure node under a statement, mark that statement as impure
-        if (m_propsp && !nodep->isPure()) m_propsp->m_isFence = true;
+        // If impure, or branch, mark statement as fence
+        if (m_propsp && (!nodep->isPure() || nodep->isBrancher())) m_propsp->m_isFence = true;
         // Analyze children
         iterateChildrenConst(nodep);
     }
@@ -645,7 +645,7 @@ class MergeCondVisitor final : public VNVisitor {
         AstNodeIf* recursivep = nullptr;
         // Merge if list is longer than one node
         if (m_mgFirstp != m_mgLastp) {
-            UINFO(6, "MergeCond - First: " << m_mgFirstp << " Last: " << m_mgLastp << endl);
+            UINFO(6, "MergeCond - First: " << m_mgFirstp << " Last: " << m_mgLastp);
             ++m_statMerges;
             if (m_listLenght > m_statLongestList) m_statLongestList = m_listLenght;
 
@@ -886,7 +886,7 @@ public:
 // MergeConditionals class functions
 
 void V3MergeCond::mergeAll(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     { MergeCondVisitor{nodep}; }
     V3Global::dumpCheckGlobalTree("merge_cond", 0, dumpTreeEitherLevel() >= 6);
 }

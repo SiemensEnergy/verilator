@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2005-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2005-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -102,7 +102,7 @@ public:
     StatsVisitor(AstNetlist* nodep, const std::string& stage, bool fastOnly)
         : m_fastOnly{fastOnly}
         , m_accump{fastOnly ? &m_dumpster : &m_counters} {
-        UINFO(9, "Starting stats, fastOnly=" << fastOnly << endl);
+        UINFO(9, "Starting stats, fastOnly=" << fastOnly);
         memset(&m_counters, 0, sizeof(m_counters));
         memset(&m_dumpster, 0, sizeof(m_dumpster));
 

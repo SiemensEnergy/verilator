@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -37,6 +37,7 @@
 
 // Pick up new lexer
 #define yylex PARSEP->tokenToBison
+#define BBCOVERIGN(fl, msg) (fl)->v3warn(COVERIGN, msg)
 #define BBUNSUP(fl, msg) (fl)->v3warn(E_UNSUPPORTED, msg)
 #define GATEUNSUP(fl, tok) \
     { BBUNSUP((fl), "Unsupported: Verilog 1995 gate primitive: " << (tok)); }
@@ -72,7 +73,6 @@
 // Statics (for here only)
 
 #define PARSEP V3ParseImp::parsep()
-#define SYMP PARSEP->symp()
 #define GRAMMARP V3ParseGrammar::singletonp()
 
 class V3ParseGrammar {
@@ -89,8 +89,8 @@ public:
     FileLine* m_instModuleFl = nullptr;  // Fileline of module referenced for instantiations
     AstPin* m_instParamp = nullptr;  // Parameters for instantiations
     string m_instModule;  // Name of module referenced for instantiations
-    VVarType m_varDecl;  // Type for next signal declaration (reg/wire/etc)
-    VDirection m_varIO;  // Direction for next signal declaration (reg/wire/etc)
+    VVarType m_varDecl = VVarType::UNKNOWN;  // Type for next signal declaration (reg/wire/etc)
+    VDirection m_varIO = VDirection::NONE;  // Direction for next signal declaration (reg/wire/etc)
     VLifetime m_varLifetime;  // Static/Automatic for next signal
     bool m_impliedDecl = false;  // Allow implied wire declarations
     bool m_varDeclTyped = false;  // Var got reg/wire for dedup check
@@ -107,13 +107,10 @@ public:
     int m_pinNum = -1;  // Pin number currently parsing
     std::stack<int> m_pinStack;  // Queue of pin numbers being parsed
 
-    static int s_modTypeImpNum;  // Implicit type number, incremented each module
+    static int s_typeImpNum;  // Implicit type number, incremented each module
 
     // CONSTRUCTORS
-    V3ParseGrammar() {
-        m_varDecl = VVarType::UNKNOWN;
-        m_varIO = VDirection::NONE;
-    }
+    V3ParseGrammar() {}
     static V3ParseGrammar* singletonp() {
         static V3ParseGrammar singleton;
         return &singleton;
@@ -135,21 +132,9 @@ public:
         string newtext = GRAMMARP->unquoteString(fileline, text);
         return new AstText{fileline, newtext};
     }
-    AstNode* createCellOrIfaceRef(FileLine* fileline, const string& name, AstPin* pinlistp,
-                                  AstNodeRange* rangelistp, bool parens) {
+    AstNode* createCell(FileLine* fileline, const string& name, AstPin* pinlistp,
+                        AstNodeRange* rangelistp) {
         // Must clone m_instParamp as may be comma'ed list of instances
-        VSymEnt* const foundp = SYMP->symCurrentp()->findIdFallback(name);
-        if (foundp && VN_IS(foundp->nodep(), Port)) {
-            // It's a non-ANSI interface, not a cell declaration
-            m_varAttrp = nullptr;
-            m_varDecl = VVarType::IFACEREF;
-            m_varIO = VDirection::NONE;
-            m_varLifetime = VLifetime::NONE;
-            setDType(new AstIfaceRefDType{fileline, "", GRAMMARP->m_instModule});
-            m_varDeclTyped = true;
-            AstVar* const nodep = createVariable(fileline, name, rangelistp, nullptr);
-            return nodep;
-        }
         AstCell* const nodep = new AstCell{
             fileline,
             GRAMMARP->m_instModuleFl,
@@ -158,7 +143,6 @@ public:
             pinlistp,
             (GRAMMARP->m_instParamp ? GRAMMARP->m_instParamp->cloneTree(true) : nullptr),
             GRAMMARP->scrubRange(rangelistp)};
-        nodep->hasNoParens(!parens);
         nodep->trace(GRAMMARP->allTracingOn(fileline));
         return nodep;
     }
@@ -184,17 +168,22 @@ public:
     AstSenTree* createGlobalClockSenTree(FileLine* fl) {
         return createClockSenTree(fl, createGlobalClockParseRef(fl));
     }
+    AstNode* createNettype(FileLine* fl, const string& name) {
+        // As nettypes are unsupported, we just alias to logic
+        AstTypedef* const nodep = new AstTypedef{fl, name, nullptr, VFlagChildDType{},
+                                                 new AstBasicDType{fl, VFlagLogicPacked{}, 1}};
+        PARSEP->tagNodep(nodep);
+        return nodep;
+    }
     AstNode* createTypedef(FileLine* fl, const string& name, AstNode* attrsp, AstNodeDType* basep,
                            AstNodeRange* rangep) {
-        AstNode* const nodep = new AstTypedef{fl, name, attrsp, VFlagChildDType{},
-                                              GRAMMARP->createArray(basep, rangep, false)};
-        SYMP->reinsert(nodep);
+        AstTypedef* const nodep = new AstTypedef{fl, name, attrsp, VFlagChildDType{},
+                                                 GRAMMARP->createArray(basep, rangep, false)};
         PARSEP->tagNodep(nodep);
         return nodep;
     }
     AstNode* createTypedefFwd(FileLine* fl, const string& name) {
-        AstNode* const nodep = new AstTypedefFwd{fl, name};
-        SYMP->reinsert(nodep);
+        AstTypedefFwd* const nodep = new AstTypedefFwd{fl, name};
         PARSEP->tagNodep(nodep);
         return nodep;
     }
@@ -208,7 +197,6 @@ public:
                                                << name << "'");
         }
     }
-    void setVarDecl(VVarType type) { m_varDecl = type; }
     void setDType(AstNodeDType* dtypep) {
         if (m_varDTypep) VL_DO_CLEAR(m_varDTypep->deleteTree(), m_varDTypep = nullptr);
         m_varDTypep = dtypep;
@@ -308,7 +296,7 @@ public:
 const VBasicDTypeKwd LOGIC = VBasicDTypeKwd::LOGIC;  // Shorthand "LOGIC"
 const VBasicDTypeKwd LOGIC_IMPLICIT = VBasicDTypeKwd::LOGIC_IMPLICIT;
 
-int V3ParseGrammar::s_modTypeImpNum = 0;
+int V3ParseGrammar::s_typeImpNum = 0;
 
 //======================================================================
 // Macro functions
@@ -317,30 +305,26 @@ int V3ParseGrammar::s_modTypeImpNum = 0;
 #define CRELINE() (PARSEP->bisonLastFileline()->copyOrSameFileLineApplied())
 #define FILELINE_OR_CRE(nodep) ((nodep) ? (nodep)->fileline() : CRELINE())
 
-#define VARRESET_LIST(decl) \
+#define VARRESET_LIST(decl) VARRESET__PVT(decl, 1)  // Start of pinlist
+#define VARRESET_NONLIST(decl) VARRESET__PVT(decl, 0);  // Not in a pinlist
+#define VARRESET__PVT(decl, pinNumStart) \
     { \
-        GRAMMARP->m_pinNum = 1; \
-        VARRESET(); \
         VARDECL(decl); \
-    }  // Start of pinlist
-#define VARRESET_NONLIST(decl) \
-    { \
-        GRAMMARP->m_pinNum = 0; \
-        VARRESET(); \
-        VARDECL(decl); \
-    }  // Not in a pinlist
-#define VARRESET() \
-    { \
-        VARDECL(UNKNOWN); \
         VARIO(NONE); \
         VARDTYPE_NDECL(nullptr); \
+        GRAMMARP->m_pinNum = (pinNumStart); \
         GRAMMARP->m_varLifetime = VLifetime::NONE; \
         GRAMMARP->m_varDeclTyped = false; \
     }
 #define VARDECL(type) \
-    { GRAMMARP->setVarDecl(VVarType::type); }
+    { GRAMMARP->m_varDecl = VVarType::type; }
 #define VARIO(type) \
     { GRAMMARP->m_varIO = VDirection::type; }
+// Set direction to default-input when detect inside an ANSI port list
+#define VARIOANSI() \
+    { \
+        if (GRAMMARP->m_varIO == VDirection::NONE) VARIO(INPUT); \
+    }
 #define VARLIFE(flag) \
     { GRAMMARP->m_varLifetime = flag; }
 #define VARDTYPE(dtypep) \
@@ -442,7 +426,8 @@ BISONPRE_VERSION(3.7,%define api.header.include {"V3ParseBison.h"})
 %token<strp>            yaID__ETC       "IDENTIFIER"
 %token<strp>            yaID__CC        "IDENTIFIER-::"
 %token<strp>            yaID__LEX       "IDENTIFIER-in-lex"
-%token<strp>            yaID__aTYPE     "TYPE-IDENTIFIER"
+%token<strp>            yaID__aINST     "IDENTIFIER-for-instance"
+%token<strp>            yaID__aTYPE     "IDENTIFIER-for-type"
 //                      Can't predecode aFUNCTION, can declare after use
 //                      Can't predecode aINTERFACE, can declare after use
 //                      Can't predecode aTASK, can declare after use
@@ -454,19 +439,24 @@ BISONPRE_VERSION(3.7,%define api.header.include {"V3ParseBison.h"})
 // IEEE: string_literal
 %token<strp>            yaSTRING        "STRING"
 %token<strp>            yaSTRING__IGNORE "STRING-ignored"       // Used when expr:string not allowed
+// IEEE: edge_descriptor
+%token<nump>            yaEDGEDESC        "EDGE DESCRIPTOR"
 
 %token<fl>              yaTIMINGSPEC    "TIMING SPEC ELEMENT"
 
 %token<fl>              ygenSTRENGTH    "STRENGTH keyword (strong1/etc)"
 
-%token<strp>            yaTABLELINE     "TABLE LINE"
+%token<strp>            yaTABLE_FIELD  "UDP table field"
+%token<fl>              yaTABLE_LRSEP   ":"
+%token<fl>              yaTABLE_LINEEND "UDP table line end"
 
-%token<strp>            yaSCHDR         "`systemc_header BLOCK"
-%token<strp>            yaSCINT         "`systemc_ctor BLOCK"
-%token<strp>            yaSCIMP         "`systemc_dtor BLOCK"
-%token<strp>            yaSCIMPH        "`systemc_interface BLOCK"
-%token<strp>            yaSCCTOR        "`systemc_implementation BLOCK"
-%token<strp>            yaSCDTOR        "`systemc_imp_header BLOCK"
+%token<strp>            yaSCCTOR        "`systemc_ctor block"
+%token<strp>            yaSCDTOR        "`systemc_dtor block"
+%token<strp>            yaSCHDR         "`systemc_header block"
+%token<strp>            yaSCHDRP        "`systemc_header_post block"
+%token<strp>            yaSCIMP         "`systemc_implementation block"
+%token<strp>            yaSCIMPH        "`systemc_imp_header block"
+%token<strp>            yaSCINT         "`systemc_interface block"
 
 %token<fl>              yVLT_CLOCKER                "clocker"
 %token<fl>              yVLT_CLOCK_ENABLE           "clock_enable"
@@ -477,6 +467,7 @@ BISONPRE_VERSION(3.7,%define api.header.include {"V3ParseBison.h"})
 %token<fl>              yVLT_FULL_CASE              "full_case"
 %token<fl>              yVLT_HIER_BLOCK             "hier_block"
 %token<fl>              yVLT_HIER_PARAMS            "hier_params"
+%token<fl>              yVLT_HIER_WORKERS           "hier_workers"
 %token<fl>              yVLT_INLINE                 "inline"
 %token<fl>              yVLT_ISOLATE_ASSIGNMENTS    "isolate_assignments"
 %token<fl>              yVLT_LINT_OFF               "lint_off"
@@ -499,9 +490,11 @@ BISONPRE_VERSION(3.7,%define api.header.include {"V3ParseBison.h"})
 %token<fl>              yVLT_TRACING_ON             "tracing_on"
 
 %token<fl>              yVLT_D_BLOCK    "--block"
+%token<fl>              yVLT_D_CONTENTS "--contents"
 %token<fl>              yVLT_D_COST     "--cost"
 %token<fl>              yVLT_D_FILE     "--file"
 %token<fl>              yVLT_D_FUNCTION "--function"
+%token<fl>              yVLT_D_HIER_DPI "--hier-dpi"
 %token<fl>              yVLT_D_LEVELS   "--levels"
 %token<fl>              yVLT_D_LINES    "--lines"
 %token<fl>              yVLT_D_MATCH    "--match"
@@ -512,6 +505,7 @@ BISONPRE_VERSION(3.7,%define api.header.include {"V3ParseBison.h"})
 %token<fl>              yVLT_D_SCOPE    "--scope"
 %token<fl>              yVLT_D_TASK     "--task"
 %token<fl>              yVLT_D_VAR      "--var"
+%token<fl>              yVLT_D_WORKERS  "--workers"
 
 %token<strp>            yaD_PLI         "${pli-system}"
 
@@ -554,7 +548,7 @@ BISONPRE_VERSION(3.7,%define api.header.include {"V3ParseBison.h"})
 // for example yP_ for punctuation based operators.
 // Double underscores "yX__Y" means token X followed by Y,
 // and "yX__ETC" means X folled by everything but Y(s).
-%token<fl>              ya1STEP         "1step"
+%token<fl>              y1STEP          "1step"
 %token<fl>              yACCEPT_ON      "accept_on"
 %token<fl>              yALIAS          "alias"
 %token<fl>              yALWAYS         "always"
@@ -751,7 +745,7 @@ BISONPRE_VERSION(3.7,%define api.header.include {"V3ParseBison.h"})
 %token<fl>              yS_UNTIL        "s_until"
 %token<fl>              yS_UNTIL_WITH   "s_until_with"
 %token<fl>              yTABLE          "table"
-//UNSUP %token<fl>      yTAGGED         "tagged"
+%token<fl>              yTAGGED         "tagged"
 %token<fl>              yTASK           "task"
 %token<fl>              yTHIS           "this"
 %token<fl>              yTHROUGHOUT     "throughout"
@@ -891,6 +885,7 @@ BISONPRE_VERSION(3.7,%define api.header.include {"V3ParseBison.h"})
 %token<fl>              yD_HIGH         "$high"
 %token<fl>              yD_HYPOT        "$hypot"
 %token<fl>              yD_INCREMENT    "$increment"
+%token<fl>              yD_INFERRED_DISABLE "$inferred_disable"
 %token<fl>              yD_INFO         "$info"
 %token<fl>              yD_ISUNBOUNDED  "$isunbounded"
 %token<fl>              yD_ISUNKNOWN    "$isunknown"
@@ -922,6 +917,7 @@ BISONPRE_VERSION(3.7,%define api.header.include {"V3ParseBison.h"})
 %token<fl>              yD_ROSE_GCLK    "$rose_gclk"
 %token<fl>              yD_RTOI         "$rtoi"
 %token<fl>              yD_SAMPLED      "$sampled"
+%token<fl>              yD_SETUPHOLD    "$setuphold"
 %token<fl>              yD_SFORMAT      "$sformat"
 %token<fl>              yD_SFORMATF     "$sformatf"
 %token<fl>              yD_SHORTREALTOBITS "$shortrealtobits"
@@ -1080,7 +1076,7 @@ BISONPRE_VERSION(3.7,%define api.header.include {"V3ParseBison.h"})
 // These prevent other conflicts
 %left           yP_ANDANDAND
 %left           yMATCHES
-//UNSUP %left   prTAGGED
+%left           prTAGGED
 //UNSUP %left   prSEQ_CLOCKING
 
 // PSL op precedence
@@ -1213,7 +1209,7 @@ description:                    // ==IEEE: description
         |       interface_declaration                   { }
         |       program_declaration                     { }
         |       package_declaration                     { }
-        |       package_item                            { if ($1) PARSEP->unitPackage($1->fileline())->addStmtsp($1); }
+        |       package_itemTop                         { if ($1) PARSEP->unitPackage($1->fileline())->addStmtsp($1); }
         |       bind_directive                          { if ($1) PARSEP->unitPackage($1->fileline())->addStmtsp($1); }
         //UNSUP config_declaration                      { }
         //                      // Verilator only
@@ -1227,14 +1223,11 @@ description:                    // ==IEEE: description
 
 timeunits_declaration<nodep>:   // ==IEEE: timeunits_declaration
                 yTIMEUNIT yaTIMENUM ';'
-                        { PARSEP->timescaleMod($<fl>2, SYMP->findTopNodeModule($<fl>1, false), true, $2, false, 0);
-                          $$ = nullptr; }
+                        { $$ = PARSEP->createTimescale($<fl>2, true, $2, false, 0); }
         |       yTIMEUNIT yaTIMENUM '/' yaTIMENUM ';'
-                        { PARSEP->timescaleMod($<fl>2, SYMP->findTopNodeModule($<fl>1, false), true, $2, true, $4);
-                          $$ = nullptr; }
+                        { $$ = PARSEP->createTimescale($<fl>2, true, $2, true, $4); }
         |       yTIMEPRECISION yaTIMENUM ';'
-                        { PARSEP->timescaleMod($<fl>2, SYMP->findTopNodeModule($<fl>1, false), false, 0, true, $2);
-                          $$ = nullptr; }
+                        { $$ = PARSEP->createTimescale($<fl>2, false, 0, true, $2); }
         ;
 
 //**********************************************************************
@@ -1244,7 +1237,6 @@ package_declaration:            // ==IEEE: package_declaration
                 packageFront package_itemListE yENDPACKAGE endLabelE
                         { $1->modTrace(GRAMMARP->allTracingOn($1->fileline()));  // Stash for implicit wires, etc
                           if ($2) $1->addStmtsp($2);
-                          SYMP->popScope($1);
                           GRAMMARP->endLabel($<fl>4, $1, $4); }
         ;
 
@@ -1262,8 +1254,7 @@ packageFront<nodeModulep>:
                           $$->lifetime($2);
                           $$->modTrace(GRAMMARP->allTracingOn($$->fileline()));
                           $$->timeunit(PARSEP->timeLastUnit());
-                          PARSEP->rootp()->addModulesp($$);
-                          SYMP->pushNew($$); }
+                          PARSEP->rootp()->addModulesp($$); }
         ;
 
 package_itemListE<nodep>:       // IEEE: [{ package_item }]
@@ -1284,12 +1275,33 @@ package_item<nodep>:            // ==IEEE: package_item
         |       sigAttrScope                            { $$ = nullptr; }
         ;
 
+package_itemTop<nodep>:         // ==IEEE: package_item
+
+                package_or_generate_item_declNoChecker  { $$ = $1; }
+        |       checker_declaration
+                       { PARSEP->rootp()->addModulesp($1);
+                         $$ = nullptr; }
+        |       anonymous_program                       { $$ = $1; }
+        |       package_export_declaration              { $$ = $1; }
+        |       timeunits_declaration                   { $$ = $1; }
+        |       sigAttrScope                            { $$ = nullptr; }
+        ;
+
 package_or_generate_item_declaration<nodep>:    // ==IEEE: package_or_generate_item_declaration
+                package_or_generate_item_declNoChecker  { $$ = $1; }
+        |       checker_declaration
+                        { $1->v3warn(E_UNSUPPORTED, "Unsupported: 'checker' below unit-level");
+                          PARSEP->rootp()->addModulesp($1);
+                          $$ = nullptr; }
+        ;
+
+package_or_generate_item_declNoChecker<nodep>:
                 net_declaration                         { $$ = $1; }
         |       data_declaration                        { $$ = $1; }
         |       task_declaration                        { $$ = $1; }
         |       function_declaration                    { $$ = $1; }
-        |       checker_declaration                     { $$ = $1; }
+        //                      // IEEE checker_declaration excluded, to handle Top, see other rules
+        //                      // checker_declaration
         |       dpi_import_export                       { $$ = $1; }
         |       extern_constraint_declaration           { $$ = $1; }
         |       class_declaration                       { $$ = $1; }
@@ -1320,14 +1332,7 @@ package_import_itemList<nodep>:
 
 package_import_item<nodep>:     // ==IEEE: package_import_item
                 idCC/*package_identifier*/ yP_COLONCOLON package_import_itemObj
-                        {
-                          if (!VN_IS($<scp>1, Package)) {
-                              $$ = nullptr;
-                              $<fl>1->v3error("Importing from missing package '" << *$<strp>1 << "'");
-                          } else {
-                              $$ = new AstPackageImport{$<fl>2, VN_CAST($<scp>1, Package), *$3};
-                              SYMP->importItem($<scp>1, *$3);
-                          } }
+                        { $$ = new AstPackageImport{$<fl>1, *$<strp>1, *$3}; }
         ;
 
 package_import_itemObj<strp>:   // IEEE: part of package_import_item
@@ -1337,7 +1342,7 @@ package_import_itemObj<strp>:   // IEEE: part of package_import_item
 
 package_export_declaration<nodep>: // IEEE: package_export_declaration
                 yEXPORT '*' yP_COLONCOLON '*' ';'
-                        { $$ = new AstPackageExportStarStar{$<fl>2}; SYMP->exportStarStar(); }
+                        { $$ = new AstPackageExportStarStar{$<fl>2}; }
         |       yEXPORT package_export_itemList ';'     { $$ = $2; }
         ;
 
@@ -1348,8 +1353,7 @@ package_export_itemList<nodep>:
 
 package_export_item<nodep>:     // ==IEEE: package_export_item
                 idCC yP_COLONCOLON package_import_itemObj
-                        { $$ = new AstPackageExport{$<fl>3, VN_CAST($<scp>1, Package), *$3};
-                          if ($<scp>1) SYMP->exportItem($<scp>1, *$3); }
+                        { $$ = new AstPackageExport{$<fl>3, *$<strp>1, *$3}; }
         ;
 
 //**********************************************************************
@@ -1361,10 +1365,10 @@ module_declaration:             // ==IEEE: module_declaration
                 modFront importsAndParametersE portsStarE ';'
         /*cont*/    module_itemListE yENDMODULE endLabelE
                         { $1->modTrace(GRAMMARP->allTracingOn($1->fileline()));  // Stash for implicit wires, etc
+                          $1->hasParameterList($<flag>2);
                           if ($2) $1->addStmtsp($2);
                           if ($3) $1->addStmtsp($3);
                           if ($5) $1->addStmtsp($5);
-                          SYMP->popScope($1);
                           GRAMMARP->endLabel($<fl>7, $1, $7); }
         |       udpFront portsStarE ';'
         /*cont*/    module_itemListE yENDPRIMITIVE endLabelE
@@ -1372,7 +1376,6 @@ module_declaration:             // ==IEEE: module_declaration
                           if ($2) $1->addStmtsp($2);
                           if ($4) $1->addStmtsp($4);
                           GRAMMARP->m_tracingParse = true;
-                          SYMP->popScope($1);
                           GRAMMARP->endLabel($<fl>6, $1, $6); }
         //
         |       yEXTERN modFront parameter_port_listE portsStarE ';'
@@ -1389,15 +1392,17 @@ modFront<nodeModulep>:
                           $$->modTrace(GRAMMARP->allTracingOn($$->fileline()));
                           $$->timeunit(PARSEP->timeLastUnit());
                           $$->unconnectedDrive(PARSEP->unconnectedDrive());
-                          PARSEP->rootp()->addModulesp($$);
-                          SYMP->pushNew($$); }
+                          PARSEP->rootp()->addModulesp($$); }
         |       modFront sigAttrScope                   { $$ = $1; }
         ;
 
 importsAndParametersE<nodep>:   // IEEE: common part of module_declaration, interface_declaration, program_declaration
         //                      // { package_import_declaration } [ parameter_port_list ]
-                parameter_port_listE                    { $$ = $1; }
-        |       package_import_declarationList parameter_port_listE     { $$ = addNextNull($1, $2); }
+                parameter_port_listE
+                        { $$ = $1; $<flag>$ = $<flag>1; }  // hasParameterList
+        |       package_import_declarationList parameter_port_listE
+                        { $$ = addNextNull($1, $2);
+                          $<flag>$ = $<flag>2; }  // hasParameterList
         ;
 
 udpFront<nodeModulep>:
@@ -1408,18 +1413,23 @@ udpFront<nodeModulep>:
                           $$->modTrace(false);
                           $$->addStmtsp(new AstPragma{$<fl>3, VPragmaType::INLINE_MODULE});
                           GRAMMARP->m_tracingParse = false;
-                          PARSEP->rootp()->addModulesp($$);
-                          SYMP->pushNew($$); }
+                          PARSEP->rootp()->addModulesp($$); }
         ;
 
-parameter_value_assignmentE<pinp>:      // IEEE: [ parameter_value_assignment ]
+parameter_value_assignmentInstE<pinp>:      // IEEE: [ parameter_value_assignment ] for instance
                 /* empty */                             { $$ = nullptr; }
-        |       parameter_value_assignment              { $$ = $1; }
+        |       parameter_value_assignmentInst          { $$ = $1; }
         ;
 
-parameter_value_assignment<pinp>:       // IEEE: parameter_value_assignment
-                '#' '(' cellparamListE ')'              { $$ = $3; }
+parameter_value_assignmentClassE<pinp>:      // IEEE: [ parameter_value_assignment ] for classes
+                /* empty */                             { $$ = nullptr; }
+        |       parameter_value_assignmentClass         { $$ = $1; }
+        ;
+
+parameter_value_assignmentInst<pinp>:       // IEEE: parameter_value_assignment for instance
+                '#' '(' instParamListE ')'              { $$ = $3; }
         //                      // Parentheses are optional around a single parameter
+        //                      // IMPORTANT: Below hardcoded in tokenPipeScanParam
         |       '#' yaINTNUM                            { $$ = new AstPin{$<fl>2, 1, "", new AstConst{$<fl>2, *$2}}; }
         |       '#' yaFLOATNUM                          { $$ = new AstPin{$<fl>2, 1, "",
                                                                           new AstConst{$<fl>2, AstConst::RealDouble{}, $2}}; }
@@ -1430,23 +1440,23 @@ parameter_value_assignment<pinp>:       // IEEE: parameter_value_assignment
         //                      // '#' delay_value      { UNSUP }
         ;
 
-parameter_value_assignmentClass<pinp>:  // IEEE: [ parameter_value_assignment ] (for classes)
+parameter_value_assignmentClass<pinp>:  // IEEE: parameter_value_assignment (for classes)
         //                      // Like parameter_value_assignment, but for classes only, which always have #()
-                '#' '(' cellparamListE ')'              { $$ = $3; }
+                '#' '(' instParamListE ')'              { $$ = $3; }
         ;
 
 parameter_port_listE<nodep>:    // IEEE: parameter_port_list + empty == parameter_value_assignment
-                /* empty */                             { $$ = nullptr; }
+                /* empty */                             { $$ = nullptr; $<flag>$ = false; }  // hasParameterList
         |       '#' '(' ')'                             { $$ = nullptr;
-                                                          SYMP->findTopNodeModule($<fl>1)->hasParameterList(true); }
+                                                          $<flag>$ = true; }  // hasParameterList
         //                      // IEEE: '#' '(' list_of_param_assignments { ',' parameter_port_declaration } ')'
         //                      // IEEE: '#' '(' parameter_port_declaration { ',' parameter_port_declaration } ')'
         //                      // Can't just do that as "," conflicts with between vars and between stmts, so
         //                      // split into pre-comma and post-comma parts
         |       '#' '('                                 { VARRESET_LIST(GPARAM);
-                                                          SYMP->findTopNodeModule($<fl>1)->hasParameterList(true);
                                                           GRAMMARP->m_pinAnsi = true; }
         /*cont*/    paramPortDeclOrArgList ')'          { $$ = $4;
+                                                          $<flag>$ = true;  // hasParameterList
                                                           VARRESET_NONLIST(UNKNOWN);
                                                           GRAMMARP->m_pinAnsi = false; }
         //                      // Note legal to start with "a=b" with no parameter statement
@@ -1474,28 +1484,28 @@ portsStarE<nodep>:              // IEEE: .* + list_of_ports + list_of_port_decla
         |       '(' ')'                                 { $$ = nullptr; }
         //                      // .* expanded from module_declaration
         //UNSUP '(' yP_DOTSTAR ')'                              { UNSUP }
-        |       '('                                     { VARRESET_LIST(PORT);
-                                                          GRAMMARP->m_pinAnsi = true; }
-        /*cont*/    list_of_ports ')'                   { $$ = $3; VARRESET_NONLIST(UNKNOWN);
-                                                          GRAMMARP->m_pinAnsi = false; }
+        |       '('
+        /*mid*/         { VARRESET_LIST(PORT); GRAMMARP->m_pinAnsi = true; }
+        /*cont*/    list_of_ports ')'
+                       { $$ = $3; VARRESET_NONLIST(UNKNOWN); GRAMMARP->m_pinAnsi = false; }
         ;
 
-list_of_portsE<nodep>:          // IEEE: list_of_ports + list_of_port_declarations
-                portAndTagE                     { $$ = $1; }
+list_of_portsE<nodep>:          // IEEE: [ list_of_ports + list_of_port_declarations ]
+                portAndTagE                             { $$ = $1; }
         |       list_of_portsE ',' portAndTagE          { $$ = addNextNull($1, $3); }
         ;
 
 list_of_ports<nodep>:           // IEEE: list_of_ports + list_of_port_declarations
-                portAndTag                      { $$ = $1; }
-        |       list_of_portsE ',' portAndTagE  { $$ = addNextNull($1, $3); }
+                portAndTag                              { $$ = $1; }
+        |       list_of_portsE ',' portAndTagE          { $$ = addNextNull($1, $3); }
         ;
 
 portAndTagE<nodep>:
                 /* empty */
-                        { int p = PINNUMINC();
+                        { const int p = PINNUMINC();
                           const string name = "__pinNumber" + cvtToStr(p);
                           $$ = new AstPort{CRELINE(), p, name};
-                          AstVar* varp = new AstVar{CRELINE(), VVarType::PORT, name, VFlagChildDType{},
+                          AstVar* varp = new AstVar{CRELINE(), VVarType::WIRE, name, VFlagChildDType{},
                                                     new AstBasicDType{CRELINE(), LOGIC_IMPLICIT}};
                           varp->declDirection(VDirection::INPUT);
                           varp->direction(VDirection::INPUT);
@@ -1524,15 +1534,15 @@ port<nodep>:                    // ==IEEE: port
         //                      // IEEE: interface_port_header port_identifier { unpacked_dimension }
         //                      // Expanded interface_port_header
         //                      // We use instantCb here because the non-port form looks just like a module instantiation
-                portDirNetE id/*interface*/                      portSig variable_dimensionListE sigAttrListE
-                        { $$ = $3; VARDECL(IFACEREF); VARIO(NONE);
-                          AstNodeDType* const dtp = new AstIfaceRefDType{$<fl>2, "", *$2};
-                          VARDTYPE(dtp);
-                          addNextNull($$, VARDONEP($$, $4, $5)); }
-        |       portDirNetE id/*interface*/ '.' idAny/*modport*/ portSig variable_dimensionListE sigAttrListE
-                        { $$ = $5; VARDECL(IFACEREF); VARIO(NONE);
+        //
+        //                      // Looks identical to variable_declaration, so V3LinkDot must resolve when ID known
+        //                      // NO: portDirNetE id/*interface*/ portSig variable_dimensionListE sigAttrListE
+        //
+                portDirNetE id/*interface*/ '.' idAny/*modport*/ portSig variable_dimensionListE sigAttrListE
+                        { // VAR for now, but V3LinkCells may call setIfcaeRef on it later
+                          $$ = $5; VARDECL(VAR); VARIO(NONE);
                           AstNodeDType* const dtp = new AstIfaceRefDType{$<fl>2, $<fl>4, "", *$2, *$4};
-                          VARDTYPE(dtp);
+                          VARDTYPE(dtp); VARIOANSI();
                           addNextNull($$, VARDONEP($$, $6, $7)); }
         |       portDirNetE yINTERFACE                           portSig rangeListE sigAttrListE
                         { $$ = nullptr; BBUNSUP($<fl>2, "Unsupported: generic interfaces"); }
@@ -1544,7 +1554,7 @@ port<nodep>:                    // ==IEEE: port
                           BBUNSUP($<fl>2, "Unsupported: interconnect");
                           AstNodeDType* const dtp = GRAMMARP->addRange(
                                     new AstBasicDType{$2, LOGIC_IMPLICIT, $3}, $4, true);
-                          VARDTYPE(dtp);
+                          VARDTYPE(dtp); VARIOANSI();
                           addNextNull($$, VARDONEP($$, $6, $7)); }
         //
         //                      // IEEE: ansi_port_declaration, with [port_direction] removed
@@ -1583,34 +1593,47 @@ port<nodep>:                    // ==IEEE: port
         //                      // IEEE: portDirNetE data_type '.' portSig -> handled with AstDot in expr.
         //
         |       portDirNetE data_type           portSig variable_dimensionListE sigAttrListE
-                        { $$ = $3; VARDTYPE($2); addNextNull($$, VARDONEP($$, $4, $5)); }
+                        { $$ = $3; VARDTYPE($2); VARIOANSI();
+                          addNextNull($$, VARDONEP($$, $4, $5)); }
+        |       portDirNetE data_type           portSig variable_dimensionListE sigAttrListE '=' constExpr
+                        { $$ = $3; VARDTYPE($2); VARIOANSI();
+                          if (AstVar* vp = VARDONEP($$, $4, $5)) { addNextNull($$, vp); vp->valuep($7); } }
         |       portDirNetE yVAR data_type      portSig variable_dimensionListE sigAttrListE
-                        { $$ = $4; VARDTYPE($3); addNextNull($$, VARDONEP($$, $5, $6)); }
+                        { $$ = $4; VARDTYPE($3); VARIOANSI();
+                          addNextNull($$, VARDONEP($$, $5, $6)); }
+        |       portDirNetE yVAR data_type      portSig variable_dimensionListE sigAttrListE '=' constExpr
+                        { $$ = $4; VARDTYPE($3); VARIOANSI();
+                          if (AstVar* vp = VARDONEP($$, $5, $6)) { addNextNull($$, vp); vp->valuep($8); } }
         |       portDirNetE yVAR implicit_typeE portSig variable_dimensionListE sigAttrListE
-                        { $$ = $4; VARDTYPE($3); addNextNull($$, VARDONEP($$, $5, $6)); }
+                        { $$ = $4; VARDTYPE($3); VARIOANSI();
+                          addNextNull($$, VARDONEP($$, $5, $6)); }
+        |       portDirNetE yVAR implicit_typeE portSig variable_dimensionListE sigAttrListE '=' constExpr
+                        { $$ = $4; VARDTYPE($3); VARIOANSI();
+                          if (AstVar* vp = VARDONEP($$, $5, $6)) { addNextNull($$, vp); vp->valuep($8); } }
         |       portDirNetE signing             portSig variable_dimensionListE sigAttrListE
                         { $$ = $3;
                           AstNodeDType* const dtp = new AstBasicDType{$3->fileline(), LOGIC_IMPLICIT, $2};
-                          VARDTYPE_NDECL(dtp);
+                          VARDTYPE_NDECL(dtp); VARIOANSI();
                           addNextNull($$, VARDONEP($$, $4, $5)); }
+        |       portDirNetE signing             portSig variable_dimensionListE sigAttrListE '=' constExpr
+                        { $$ = $3;
+                          AstNodeDType* const dtp = new AstBasicDType{$3->fileline(), LOGIC_IMPLICIT, $2};
+                          VARDTYPE_NDECL(dtp); VARIOANSI();
+                          if (AstVar* vp = VARDONEP($$, $4, $5)) { addNextNull($$, vp); vp->valuep($7); } }
         |       portDirNetE signingE rangeList  portSig variable_dimensionListE sigAttrListE
                         { $$ = $4;
                           AstNodeDType* const dtp = GRAMMARP->addRange(
                                     new AstBasicDType{$3->fileline(), LOGIC_IMPLICIT, $2}, $3, true);
                           VARDTYPE_NDECL(dtp);
                           addNextNull($$, VARDONEP($$, $5, $6)); }
+        |       portDirNetE signingE rangeList  portSig variable_dimensionListE sigAttrListE '=' constExpr
+                        { $$ = $4;
+                          AstNodeDType* const dtp = GRAMMARP->addRange(
+                                    new AstBasicDType{$3->fileline(), LOGIC_IMPLICIT, $2}, $3, true);
+                          VARDTYPE_NDECL(dtp);
+                          if (AstVar* vp = VARDONEP($$, $5, $6)) { addNextNull($$, vp); vp->valuep($8); } }
         |       portDirNetE /*implicit*/        portSig variable_dimensionListE sigAttrListE
                         { $$ = $2; /*VARDTYPE-same*/ addNextNull($$, VARDONEP($$, $3, $4)); }
-        //
-        |       portDirNetE data_type           portSig variable_dimensionListE sigAttrListE '=' constExpr
-                        { $$ = $3; VARDTYPE($2);
-                          if (AstVar* vp = VARDONEP($$, $4, $5)) { addNextNull($$, vp); vp->valuep($7); } }
-        |       portDirNetE yVAR data_type      portSig variable_dimensionListE sigAttrListE '=' constExpr
-                        { $$ = $4; VARDTYPE($3);
-                          if (AstVar* vp = VARDONEP($$, $5, $6)) { addNextNull($$, vp); vp->valuep($8); } }
-        |       portDirNetE yVAR implicit_typeE portSig variable_dimensionListE sigAttrListE '=' constExpr
-                        { $$ = $4; VARDTYPE($3);
-                          if (AstVar* vp = VARDONEP($$, $5, $6)) { addNextNull($$, vp); vp->valuep($8); } }
         |       portDirNetE /*implicit*/        portSig variable_dimensionListE sigAttrListE '=' constExpr
                         { $$ = $2; /*VARDTYPE-same*/
                           if (AstVar* vp = VARDONEP($$, $3, $4)) { addNextNull($$, vp); vp->valuep($6); } }
@@ -1632,9 +1655,9 @@ port_declNetE:                  // IEEE: part of port_declaration, optional net 
 
 portSig<nodep>:
                 id/*port*/
-                        { $$ = new AstPort{$<fl>1, PINNUMINC(), *$1}; SYMP->reinsert($$); }
+                        { $$ = new AstPort{$<fl>1, PINNUMINC(), *$1}; }
         |       idSVKwd
-                        { $$ = new AstPort{$<fl>1, PINNUMINC(), *$1}; SYMP->reinsert($$); }
+                        { $$ = new AstPort{$<fl>1, PINNUMINC(), *$1}; }
         ;
 
 //**********************************************************************
@@ -1647,7 +1670,7 @@ interface_declaration:          // IEEE: interface_declaration + interface_nonan
                         { if ($2) $1->addStmtsp($2);
                           if ($3) $1->addStmtsp($3);
                           if ($5) $1->addStmtsp($5);
-                          SYMP->popScope($1); }
+                          $1->hasParameterList($<flag>2); }
         |       yEXTERN intFront parameter_port_listE portsStarE ';'
                         { BBUNSUP($<fl>1, "Unsupported: extern interface"); }
         ;
@@ -1657,8 +1680,7 @@ intFront<nodeModulep>:
                         { $$ = new AstIface{$<fl>3, *$3};
                           $$->inLibrary(true);
                           $$->lifetime($2);
-                          PARSEP->rootp()->addModulesp($$);
-                          SYMP->pushNew($$); }
+                          PARSEP->rootp()->addModulesp($$); }
         |       intFront sigAttrScope                   { $$ = $1; }
         ;
 
@@ -1690,8 +1712,8 @@ interface_item<nodep>:          // IEEE: interface_item + non_port_interface_ite
         ;
 
 interface_or_generate_item<nodep>:  // ==IEEE: interface_or_generate_item
-        //                          // module_common_item in interface_item, as otherwise duplicated
-        //                          // with module_or_generate_item's module_common_item
+        //                      // module_common_item in interface_item, as otherwise duplicated
+        //                      // with module_or_generate_item's module_common_item
                 modport_declaration                     { $$ = $1; }
         |       extern_tf_declaration                   { $$ = $1; }
         ;
@@ -1731,25 +1753,23 @@ program_declaration:            // IEEE: program_declaration + program_nonansi_h
                 pgmFront parameter_port_listE portsStarE ';'
         /*cont*/    program_itemListE yENDPROGRAM endLabelE
                         { $1->modTrace(GRAMMARP->allTracingOn($1->fileline()));  // Stash for implicit wires, etc
+                          $1->hasParameterList($<flag>2);
                           if ($2) $1->addStmtsp($2);
                           if ($3) $1->addStmtsp($3);
                           if ($5) $1->addStmtsp($5);
-                          SYMP->popScope($1);
                           GRAMMARP->endLabel($<fl>7, $1, $7); }
         |       yEXTERN pgmFront parameter_port_listE portsStarE ';'
-                        { BBUNSUP($<fl>1, "Unsupported: extern program");
-                          SYMP->popScope($2); }
+                        { BBUNSUP($<fl>1, "Unsupported: extern program"); }
         ;
 
 pgmFront<nodeModulep>:
                 yPROGRAM lifetimeE idAny/*new_program*/
-                        { $$ = new AstModule{$<fl>3, *$3, true};
+                        { $$ = new AstModule{$<fl>3, *$3, AstModule::Program{}};
                           $$->lifetime($2);
                           $$->inLibrary(PARSEP->inLibrary() || $$->fileline()->celldefineOn());
                           $$->modTrace(GRAMMARP->allTracingOn($$->fileline()));
                           $$->timeunit(PARSEP->timeLastUnit());
-                          PARSEP->rootp()->addModulesp($$);
-                          SYMP->pushNew($$); }
+                          PARSEP->rootp()->addModulesp($$); }
         ;
 
 program_itemListE<nodep>:       // ==IEEE: [{ program_item }]
@@ -1896,9 +1916,11 @@ parameter_declarationFront:     // IEEE: local_ or parameter_declaration w/o ass
 
 parameter_declarationTypeFront: // IEEE: local_ or parameter_declaration w/o assignment
         //                      // Front must execute first so VARDTYPE is ready before list of vars
-                varParamReset yTYPE__ETC                { /*VARRESET-in-varParam*/ VARDTYPE(new AstParseTypeDType{$2}); }
-        |       varParamReset yTYPE__ETC forward_type   { /*VARRESET-in-varParam*/ VARDTYPE(new AstParseTypeDType{$2});
-                                                          BBUNSUP($<fl>1, "Unsupported: 'parameter type' forward type"); }
+                varParamReset yTYPE__ETC
+                        { /*VARRESET-in-varParam*/ VARDTYPE(new AstParseTypeDType{$2}); }
+        |       varParamReset yTYPE__ETC forward_type
+                        { /*VARRESET-in-varParam*/
+                          AstNodeDType* const dtp = new AstParseTypeDType{$2, $3}; VARDTYPE(dtp); }
         ;
 
 parameter_port_declarationFrontE: // IEEE: local_ or parameter_port_declaration w/o assignment
@@ -1919,20 +1941,26 @@ parameter_port_declarationTypeFrontE: // IEEE: parameter_port_declaration w/o as
         //                      // IEEE: parameter_declaration (minus assignment)
         //                      // IEEE: local_parameter_declaration (minus assignment)
         //                      // Front must execute first so VARDTYPE is ready before list of vars
-                varParamReset yTYPE__ETC                { /*VARRESET-in-varParam*/ VARDTYPE(new AstParseTypeDType{$2}); }
-        |       varParamReset yTYPE__ETC forward_type   { /*VARRESET-in-varParam*/ VARDTYPE(new AstParseTypeDType{$2});
-                                                          BBUNSUP($<fl>1, "Unsupported: 'parameter type' forward type"); }
-        |       yTYPE__ETC                              { /*VARRESET-in-varParam*/ VARDTYPE(new AstParseTypeDType{$1}); }
-        |       yTYPE__ETC forward_type                 { /*VARRESET-in-varParam*/ VARDTYPE(new AstParseTypeDType{$1});
-                                                          BBUNSUP($<fl>1, "Unsupported: 'parameter type' forward type"); }
+                varParamReset yTYPE__ETC
+                        { /*VARRESET-in-varParam*/
+                          AstNodeDType* const dtp = new AstParseTypeDType{$2}; VARDTYPE(dtp); }
+        |       varParamReset yTYPE__ETC forward_type
+                        { /*VARRESET-in-varParam*/
+                          AstNodeDType* const dtp = new AstParseTypeDType{$2, $3}; VARDTYPE(dtp); }
+        |       yTYPE__ETC
+                        { /*VARRESET-in-varParam*/
+                          AstNodeDType* const dtp = new AstParseTypeDType{$1}; VARDTYPE(dtp); }
+        |       yTYPE__ETC forward_type
+                        { /*VARRESET-in-varParam*/
+                          AstNodeDType* const dtp = new AstParseTypeDType{$1, $2}; VARDTYPE(dtp); }
         ;
 
-forward_type:  // ==IEEE: forward_type
-                yENUM                                   { }
-        |       ySTRUCT                                 { }
-        |       yUNION                                  { }
-        |       yCLASS                                  { }
-        |       yINTERFACE yCLASS                       { }
+forward_type<fwdtype>:  // ==IEEE: forward_type
+                yENUM                                   { $$ = VFwdType::ENUM; }
+        |       ySTRUCT                                 { $$ = VFwdType::STRUCT; }
+        |       yUNION                                  { $$ = VFwdType::UNION; }
+        |       yCLASS                                  { $$ = VFwdType::CLASS; }
+        |       yINTERFACE yCLASS                       { $$ = VFwdType::INTERFACE_CLASS; }
         ;
 
 net_declaration<nodep>:         // IEEE: net_declaration - excluding implict
@@ -1989,12 +2017,12 @@ net_type:                       // ==IEEE: net_type
         |       yTRI                                    { VARDECL(TRIWIRE); }
         |       yTRI0                                   { VARDECL(TRI0); }
         |       yTRI1                                   { VARDECL(TRI1); }
-        |       yTRIAND                                 { VARDECL(WIRE); BBUNSUP($1, "Unsupported: triand"); }
-        |       yTRIOR                                  { VARDECL(WIRE); BBUNSUP($1, "Unsupported: trior"); }
+        |       yTRIAND                                 { VARDECL(TRIAND); }
+        |       yTRIOR                                  { VARDECL(TRIOR); }
         |       yTRIREG                                 { VARDECL(WIRE); BBUNSUP($1, "Unsupported: trireg"); }
-        |       yWAND                                   { VARDECL(WIRE); BBUNSUP($1, "Unsupported: wand"); }
+        |       yWAND                                   { VARDECL(TRIAND); }
         |       yWIRE                                   { VARDECL(WIRE); }
-        |       yWOR                                    { VARDECL(WIRE); BBUNSUP($1, "Unsupported: wor"); }
+        |       yWOR                                    { VARDECL(TRIOR); }
         //                      // VAMS - somewhat hackish
         |       yWREAL                                  { VARDECL(WREAL); }
         ;
@@ -2058,19 +2086,37 @@ port_declaration<nodep>:        // ==IEEE: port_declaration
         |       port_directionReset port_declNetE /*implicit*/
         /*mid*/         { VARDTYPE_NDECL(nullptr); /*default_nettype*/ }
         /*cont*/    list_of_variable_decl_assignments                   { $$ = $4; }
-        //                      // IEEE: interface_declaration
-        //                      // Looks just like variable declaration unless has a period
-        //                      // See etcInst
+        //
+        //                      // IEEE: interface_port_declaration
+        //                      // IEEE: interface_identifier list_of_interface_identifiers
+        //
+        //                      // Identical to variable_declaration, resolve in V3LinkDot when id known
+        //                      // NO:  id/*interface*/  mpInstnameList
+        //
+        //                      // IEEE: interface_port_declaration
+        //                      // IEEE: interface_identifier '.' modport_identifier list_of_interface_identifiers
+        |       id/*interface*/ '.' idAny/*modport*/
+        /*mid*/         { VARRESET_NONLIST(VVarType::IFACEREF);
+                          AstIfaceRefDType* const dtp = new AstIfaceRefDType{$<fl>1, $<fl>3, "", *$1, *$3};
+                          dtp->isPortDecl(true);
+                          VARDTYPE(dtp); }
+        /*cont*/    mpInstnameList
+                        { $$ = VARDONEP($5, nullptr, nullptr); }
+        //UNSUP: strengthSpecE for udp_instantiations
         ;
 
 tf_port_declaration<nodep>:     // ==IEEE: tf_port_declaration
         //                      // Used inside function; followed by ';'
         //                      // SEE ALSO port_declaration, port, data_declarationVarFront
         //
-                port_directionReset      data_type      { VARDTYPE($2); }  list_of_tf_variable_identifiers ';'  { $$ = $4; }
-        |       port_directionReset      implicit_typeE { VARDTYPE_NDECL($2); }  list_of_tf_variable_identifiers ';'    { $$ = $4; }
-        |       port_directionReset yVAR data_type      { VARDTYPE($3); }  list_of_tf_variable_identifiers ';'  { $$ = $5; }
-        |       port_directionReset yVAR implicit_typeE { VARDTYPE($3); }  list_of_tf_variable_identifiers ';'  { $$ = $5; }
+                port_directionReset      data_type      { VARDTYPE($2); }  list_of_tf_variable_identifiers ';'
+                        { $$ = $4; }
+        |       port_directionReset      implicit_typeE { VARDTYPE_NDECL($2); }  list_of_tf_variable_identifiers ';'
+                        { $$ = $4; }
+        |       port_directionReset yVAR data_type      { VARDTYPE($3); }  list_of_tf_variable_identifiers ';'
+                        { $$ = $5; }
+        |       port_directionReset yVAR implicit_typeE { VARDTYPE($3); }  list_of_tf_variable_identifiers ';'
+                        { $$ = $5; }
         ;
 
 integer_atom_type<basicDTypep>: // ==IEEE: integer_atom_type
@@ -2137,6 +2183,26 @@ data_type<nodeDTypep>:          // ==IEEE: data_type
                           $$ = GRAMMARP->createArray(refp, $4, true); }
         ;
 
+data_typeAny<nodeDTypep>:       // ==IEEE: data_type (accepting idAny)
+        //                      // IEEE: data_type_or_incomplete_class_scoped_type parses same as this
+        //                      // as can't tell them apart until link
+        //                      // This expansion also replicated elsewhere, IE data_type__AndID
+                data_typeNoRef                          { $$ = $1; }
+        //
+        //                      // REFERENCES
+        //
+        //                      // IEEE: [ class_scope | package_scope ] type_identifier { packed_dimension }
+        //                      // IEEE: class_type
+        //                      // IEEE: ps_covergroup_identifier
+        //                      // Don't distinguish between types and classes so all these combined
+        |       packageClassScopeE idAny packed_dimensionListE
+                        { AstRefDType* const refp = new AstRefDType{$<fl>2, *$2, $1, nullptr};
+                          $$ = GRAMMARP->createArray(refp, $3, true); }
+        |       packageClassScopeE idAny parameter_value_assignmentClass packed_dimensionListE
+                        { AstRefDType* const refp = new AstRefDType{$<fl>2, *$2, $1, $3};
+                          $$ = GRAMMARP->createArray(refp, $4, true); }
+        ;
+
 data_typeBasic<nodeDTypep>:             // IEEE: part of data_type
                 integer_vector_type signingE rangeListE { $1->setSignedState($2); $$ = GRAMMARP->addRange($1, $3, true); }
         |       integer_atom_type signingE              { $1->setSignedState($2); $$ = $1; }
@@ -2148,12 +2214,12 @@ data_typeNoRef<nodeDTypep>:             // ==IEEE: data_type, excluding class_ty
         |       struct_unionDecl packed_dimensionListE
                         { $$ = GRAMMARP->createArray(
                                    new AstDefImplicitDType{$1->fileline(),
-                                                           "__typeimpsu" + cvtToStr(GRAMMARP->s_modTypeImpNum++),
-                                                           SYMP, VFlagChildDType{}, $1}, $2, true); }
+                                                           "__typeimpsu" + cvtToStr(GRAMMARP->s_typeImpNum++),
+                                                           VFlagChildDType{}, $1}, $2, true); }
         |       enumDecl
                         { $$ = new AstDefImplicitDType{$1->fileline(),
-                                                       "__typeimpenum" + cvtToStr(GRAMMARP->s_modTypeImpNum++),
-                                                       SYMP, VFlagChildDType{}, $1}; }
+                                                       "__typeimpenum" + cvtToStr(GRAMMARP->s_typeImpNum++),
+                                                       VFlagChildDType{}, $1}; }
         |       ySTRING
                         { $$ = new AstBasicDType{$1, VBasicDTypeKwd::STRING}; }
         |       yCHANDLE
@@ -2192,7 +2258,7 @@ data_typeVirtual<nodeDTypep>:           // ==IEEE: data_type after yVIRTUAL [ yI
         ;
 
 data_type_or_void<nodeDTypep>:  // ==IEEE: data_type_or_void
-                data_type                               { $$ = $1; }
+                data_typeAny                            { $$ = $1; }
         |       yVOID
                         { $$ = new AstBasicDType{$1, LOGIC_IMPLICIT};
                           BBUNSUP($1, "Unsupported: void (for tagged unions)"); }
@@ -2222,19 +2288,29 @@ type_referenceEq<nodeExprp>:            // IEEE: type_reference (as an ==/!== ex
 struct_unionDecl<nodeUOrStructDTypep>:  // IEEE: part of data_type
         //                      // packedSigningE is NOP for unpacked
                 ySTRUCT        packedSigningE '{'
-        /*mid*/         { $<nodeUOrStructDTypep>$ = new AstStructDType{$1, $2}; SYMP->pushNew($<nodeUOrStructDTypep>$); }
-        /*cont*/    struct_union_memberList '}'
-                        { $$ = $<nodeUOrStructDTypep>4; $$->addMembersp($5); SYMP->popScope($$); }
+        /*mid*/         { $<nodeUOrStructDTypep>$ = new AstStructDType{$1, $2}; }
+        /*cont*/    struct_union_memberListEnd
+                        { $$ = $<nodeUOrStructDTypep>4; $$->addMembersp($5); }
         |       yUNION taggedSoftE packedSigningE '{'
-        /*mid*/         { $<nodeUOrStructDTypep>$ = new AstUnionDType{$1, $3}; SYMP->pushNew($<nodeUOrStructDTypep>$); }
-        /*cont*/    struct_union_memberList '}'
-                        { $$ = $<nodeUOrStructDTypep>5; $$->addMembersp($6); SYMP->popScope($$); }
+        /*mid*/         { $<nodeUOrStructDTypep>$ = new AstUnionDType{$1, $2, $3}; }
+        /*cont*/    struct_union_memberListEnd
+                        { $$ = $<nodeUOrStructDTypep>5; $$->addMembersp($6); }
+        ;
+
+struct_union_memberListEnd<memberDTypep>: // IEEE: { struct_union_member } '}'
+                struct_union_memberList '}'                     { $$ = $1; }
+        //
+        |       struct_union_memberList error '}'               { $$ = $1; }
+        |       error '}'                                       { $$ = nullptr; }
         ;
 
 struct_union_memberList<memberDTypep>: // IEEE: { struct_union_member }
                 struct_union_member                             { $$ = $1; }
 
         |       struct_union_memberList struct_union_member     { $$ = addNextNull($1, $2); }
+        //
+        |       struct_union_memberList error ';'               { $$ = $1; }
+        |       error ';'                                       { $$ = nullptr; }
         ;
 
 struct_union_member<memberDTypep>:     // ==IEEE: struct_union_member
@@ -2277,9 +2353,6 @@ member_decl_assignment<memberDTypep>:   // Derived from IEEE: variable_decl_assi
         //                      // IEEE: "class_variable_identifier [ '=' class_new ]"
         //                      // variable_dimensionE must be empty
         //                      // Pushed into variable_declExpr:dynamic_array_new
-        //
-        //                      // IEEE: "[ covergroup_variable_identifier ] '=' class_new
-        //                      // Pushed into variable_declExpr:class_new
         ;
 
 list_of_variable_decl_assignments<varp>:        // ==IEEE: list_of_variable_decl_assignments
@@ -2299,11 +2372,6 @@ variable_decl_assignment<varp>: // ==IEEE: variable_decl_assignment
         //                      // IEEE: "class_variable_identifier [ '=' class_new ]"
         //                      // variable_dimensionE must be empty
         //                      // Pushed into variable_declExpr:dynamic_array_new
-        //
-        //                      // IEEE: "[ covergroup_variable_identifier ] '=' class_new
-        //                      // Pushed into variable_declExpr:class_new
-        |       '=' class_new
-                        { $$ = nullptr; BBUNSUP($1, "Unsupported: declaration assignment with new()"); }
         ;
 
 list_of_tf_variable_identifiers<nodep>: // ==IEEE: list_of_tf_variable_identifiers
@@ -2321,7 +2389,7 @@ tf_variable_identifier<varp>:           // IEEE: part of list_of_tf_variable_ide
 variable_declExpr<nodep>:               // IEEE: part of variable_decl_assignment - rhs of expr
                 expr                                    { $$ = $1; }
         |       dynamic_array_new                       { $$ = $1; }
-        |       class_new                               { $$ = $1; }
+        |       class_newNoScope                        { $$ = $1; }
         ;
 
 variable_dimensionListE<nodeRangep>:    // IEEE: variable_dimension + empty
@@ -2360,10 +2428,10 @@ random_qualifier<qualifiers>:   // ==IEEE: random_qualifier
         |       yRANDC                                  { $$ = VMemberQualifiers::none(); $$.m_randc = true; }
         ;
 
-taggedSoftE:
-                /*empty*/                               { }
-        |       ySOFT                                   { BBUNSUP($<fl>1, "Unsupported: 'union soft'"); }
-        //UNSUP yTAGGED                                 { UNSUP }
+taggedSoftE<cbool>:
+                /*empty*/                               { $$ = false; }
+        |       ySOFT                                   { $$ = true; }
+        |       yTAGGED                                 { $$ = false; BBUNSUP($<fl>1, "Unsupported: tagged union"); }
         ;
 
 packedSigningE<signstate>:
@@ -2452,11 +2520,13 @@ data_declaration<nodep>:        // ==IEEE: data_declaration
         ;
 
 class_property<nodep>:          // ==IEEE: class_property, which is {property_qualifier} data_declaration
-                memberQualListE data_declarationVarClass                { $$ = $2; $1.applyToNodes($2); }
+                memberQualListE data_declarationVarClass
+                        { $$ = $2; $1.applyToNodes($2); }
+        |       memberQualListE type_declaration
+                        { $$ = $2; if (VN_IS($2, Typedef)) $1.applyToNodes(VN_AS($2, Typedef)); }
         //                      // UNSUP: Import needs to apply local/protected from memberQualList, and error on others
-        |       memberQualListE type_declaration                        { $$ = $2; }
-        //                      // UNSUP: Import needs to apply local/protected from memberQualList, and error on others
-        |       memberQualListE package_import_declaration              { $$ = $2; }
+        |       memberQualListE package_import_declaration
+                        { $$ = $2; }
         //                      // IEEE: virtual_interface_declaration
         //                      // "yVIRTUAL yID yID" looks just like a data_declaration
         //                      // Therefore the virtual_interface_declaration term isn't used
@@ -2540,16 +2610,28 @@ data_declarationVarFrontClass:  // IEEE: part of data_declaration (for class_pro
         ;
 
 nettype_declaration<nodep>:  // IEEE: nettype_declaration/net_type_declaration
-                yNETTYPE data_type idAny/*nettype_identifier*/ ';'
-                        { $$ = nullptr; BBUNSUP($<fl>1, "Unsupported: nettype"); }
-        //                      // package_scope part of data_type
-        |       yNETTYPE data_type idAny yWITH__ETC packageClassScopeE id/*tf_identifier*/ ';'
-                        { $$ = nullptr; BBUNSUP($<fl>1, "Unsupported: nettype"); }
-        |       yNETTYPE packageClassScopeE id/*nettype_identifier*/ idAny/*nettype_identifier*/ ';'
-                        { $$ = nullptr; BBUNSUP($<fl>1, "Unsupported: nettype"); }
-        |       yNETTYPE packageClassScopeE id/*nettype_identifier*/ idAny/*nettype_identifier*/
+        //                      // Union of data_typeAny and nettype_identifier matching
+                yNETTYPE data_typeNoRef
+        /*cont*/   idAny/*nettype_identifier*/ ';'
+                        { $$ = GRAMMARP->createNettype($<fl>3, *$3); BBUNSUP($<fl>1, "Unsupported: nettype"); }
+        |       yNETTYPE data_typeNoRef
+        /*cont*/   idAny/*nettype_identifier*/
         /*cont*/   yWITH__ETC packageClassScopeE id/*tf_identifier*/ ';'
-                        { $$ = nullptr; BBUNSUP($<fl>1, "Unsupported: nettype"); }
+                        { $$ = GRAMMARP->createNettype($<fl>3, *$3); BBUNSUP($<fl>1, "Unsupported: nettype with"); }
+        |       yNETTYPE packageClassScopeE idAny packed_dimensionListE
+        /*cont*/   idAny/*nettype_identifier*/ ';'
+                        { $$ = GRAMMARP->createNettype($<fl>5, *$5); BBUNSUP($<fl>1, "Unsupported: nettype"); }
+        |       yNETTYPE packageClassScopeE idAny packed_dimensionListE
+        /*cont*/   idAny/*nettype_identifier*/
+        /*cont*/   yWITH__ETC packageClassScopeE id/*tf_identifier*/ ';'
+                        { $$ = GRAMMARP->createNettype($<fl>5, *$5); BBUNSUP($<fl>1, "Unsupported: nettype with"); }
+        |       yNETTYPE packageClassScopeE idAny parameter_value_assignmentClass packed_dimensionListE
+        /*cont*/   idAny/*nettype_identifier*/ ';'
+                        { $$ = GRAMMARP->createNettype($<fl>6, *$6); BBUNSUP($<fl>1, "Unsupported: nettype"); }
+        |       yNETTYPE packageClassScopeE idAny parameter_value_assignmentClass packed_dimensionListE
+        /*cont*/   idAny/*nettype_identifier*/
+        /*cont*/   yWITH__ETC packageClassScopeE id/*tf_identifier*/ ';'
+                        { $$ = GRAMMARP->createNettype($<fl>6, *$6); BBUNSUP($<fl>1, "Unsupported: nettype with"); }
         ;
 
 implicit_typeE<nodeDTypep>:             // IEEE: part of *data_type_or_implicit
@@ -2605,6 +2687,8 @@ type_declaration<nodep>:        // ==IEEE: type_declaration
         |       yTYPEDEF yUNION idAny ';'               { $$ = GRAMMARP->createTypedefFwd($<fl>3, *$3); }
         |       yTYPEDEF yCLASS idAny ';'               { $$ = GRAMMARP->createTypedefFwd($<fl>3, *$3); }
         |       yTYPEDEF yINTERFACE yCLASS idAny ';'    { $$ = GRAMMARP->createTypedefFwd($<fl>4, *$4); }
+        //
+        |       yTYPEDEF error idAny ';'                { $$ = GRAMMARP->createTypedefFwd($<fl>3, *$3); }
         ;
 
 dtypeAttrListE<nodep>:
@@ -2658,17 +2742,23 @@ non_port_module_item<nodep>:    // ==IEEE: non_port_module_item
                         { $$ = nullptr; BBUNSUP(CRELINE(), "Unsupported: interface decls within module decls"); }
         |       timeunits_declaration                   { $$ = $1; }
         //                      // Verilator specific
-        |       yaSCHDR                                 { $$ = new AstScHdr{$<fl>1, *$1}; v3Global.setHasSCTextSections(); }
-        |       yaSCINT                                 { $$ = new AstScInt{$<fl>1, *$1}; v3Global.setHasSCTextSections(); }
-        |       yaSCIMP                                 { $$ = new AstScImp{$<fl>1, *$1}; v3Global.setHasSCTextSections(); }
-        |       yaSCIMPH                                { $$ = new AstScImpHdr{$<fl>1, *$1}; v3Global.setHasSCTextSections(); }
-        |       yaSCCTOR                                { $$ = new AstScCtor{$<fl>1, *$1}; v3Global.setHasSCTextSections(); }
-        |       yaSCDTOR                                { $$ = new AstScDtor{$<fl>1, *$1}; v3Global.setHasSCTextSections(); }
+        |       vlScBlock                               { $$ = $1; }
         |       yVL_HIER_BLOCK                          { $$ = new AstPragma{$1, VPragmaType::HIER_BLOCK}; }
         |       yVL_INLINE_MODULE                       { $$ = new AstPragma{$1, VPragmaType::INLINE_MODULE}; }
         |       yVL_NO_INLINE_MODULE                    { $$ = new AstPragma{$1, VPragmaType::NO_INLINE_MODULE}; }
         |       yVL_PUBLIC_MODULE                       { $$ = new AstPragma{$1, VPragmaType::PUBLIC_MODULE}; v3Global.dpi(true); }
         ;
+
+vlScBlock<nodep>:  // Verilator-specific `systemc_* blocks
+                yaSCHDR                                 { $$ = new AstScHdr{$<fl>1, *$1}; v3Global.setHasSCTextSections(); }
+        |       yaSCHDRP                                { $$ = new AstScHdrPost{$<fl>1, *$1}; v3Global.setHasSCTextSections(); }
+        |       yaSCINT                                 { $$ = new AstScInt{$<fl>1, *$1}; v3Global.setHasSCTextSections(); }
+        |       yaSCIMP                                 { $$ = new AstScImp{$<fl>1, *$1}; v3Global.setHasSCTextSections(); }
+        |       yaSCIMPH                                { $$ = new AstScImpHdr{$<fl>1, *$1}; v3Global.setHasSCTextSections(); }
+        |       yaSCCTOR                                { $$ = new AstScCtor{$<fl>1, *$1}; v3Global.setHasSCTextSections(); }
+        |       yaSCDTOR                                { $$ = new AstScDtor{$<fl>1, *$1}; v3Global.setHasSCTextSections(); }
+        ;
+
 
 module_or_generate_item<nodep>: // ==IEEE: module_or_generate_item
         //                      // IEEE: parameter_override
@@ -2715,11 +2805,9 @@ always_construct<nodep>:        // IEEE: == always_construct
 
 continuous_assign<nodep>:       // IEEE: continuous_assign
                 yASSIGN driveStrengthE delay_controlE assignList ';'
-                {
-                    $$ = $4;
-                    STRENGTH_LIST($4, $2, AssignW);
-                    DELAY_LIST($3, $4);
-                }
+                        { $$ = $4;
+                          STRENGTH_LIST($4, $2, AssignW);
+                          DELAY_LIST($3, $4); }
         ;
 
 initial_construct<nodep>:       // IEEE: initial_construct
@@ -2734,10 +2822,18 @@ module_or_generate_item_declaration<nodep>:     // ==IEEE: module_or_generate_it
                 package_or_generate_item_declaration    { $$ = $1; }
         |       genvar_declaration                      { $$ = $1; }
         |       clocking_declaration                    { $$ = $1; }
-        |       yDEFAULT yCLOCKING idAny/*new-clocking_identifier*/ ';'
+        |       modDefaultClocking                      { $$ = $1; }
+        |       defaultDisable                          { $$ = $1; }
+        ;
+
+modDefaultClocking<nodep>:  // IEEE: part of module_or_generate_item_declaration/checker_or_...
+                yDEFAULT yCLOCKING idAny/*new-clocking_identifier*/ ';'
                         { $$ = nullptr; BBUNSUP($1, "Unsupported: default clocking identifier"); }
-        |       yDEFAULT yDISABLE yIFF expr/*expression_or_dist*/ ';'
-                        { $$ = nullptr; BBUNSUP($1, "Unsupported: default disable iff"); }
+        ;
+
+defaultDisable<nodep>:  // IEEE: part of module_/checker_or_generate_item_declaration
+                yDEFAULT yDISABLE yIFF expr/*expression_or_dist*/ ';'
+                        { $$ = new AstDefaultDisable{$1, $4}; }
         ;
 
 aliasEqList:                    // IEEE: part of net_alias
@@ -2874,7 +2970,7 @@ c_generate_item<nodep>:  // IEEE: generate_item (for checkers)
         ;
 
 conditional_generate_construct<nodep>:  // ==IEEE: conditional_generate_construct
-                yCASE '(' exprTypeCompare ')' ~c~case_generate_itemListE yENDCASE
+                yCASE '(' exprTypeCompare ')' ~c~case_generate_itemList yENDCASE
                         { $$ = new AstGenCase{$1, $3, $5}; }
         |       yIF '(' exprTypeCompare ')' ~c~generate_block_or_null %prec prLOWER_THAN_ELSE
                         { $$ = new AstGenIf{$1, $3, $5, nullptr}; }
@@ -2905,7 +3001,7 @@ loop_generate_construct<nodep>: // ==IEEE: loop_generate_construct
                                 initp->unlinkFrBackWithNext();  // Detach 2nd from varp, make 1st init
                                 blkp->addStmtsp(varp);
                           }
-                          // Statements are under 'genforp' as cells under this
+                          // Statements are under 'genforp' as instances under this
                           // for loop won't get an extra layer of hierarchy tacked on
                           blkp->genforp(new AstGenFor{$1, initp, $5, $7, lowerNoBegp});
                           $$ = blkp;
@@ -2965,15 +3061,6 @@ genvar_iteration<nodep>:        // ==IEEE: genvar_iteration
                                                                 new AstConst{$2, AstConst::StringToParse{}, "'b1"}}}; }
         ;
 
-case_generate_itemListE<caseItemp>: // IEEE: [{ case_generate_itemList }]
-                /* empty */                             { $$ = nullptr; }
-        |       ~c~case_generate_itemList               { $$ = $1; }
-        ;
-
-c_case_generate_itemListE<caseItemp>:  // IEEE: { case_generate_item } (for checkers)
-                BISONPRE_COPY(case_generate_itemListE,{s/~c~/c_/g})      // {copied}
-        ;
-
 case_generate_itemList<caseItemp>:  // IEEE: { case_generate_itemList }
                 ~c~case_generate_item                   { $$ = $1; }
         |       ~c~case_generate_itemList ~c~case_generate_item         { $$ = $1; $1->addNext($2); }
@@ -3007,9 +3094,9 @@ assignOne<nodep>:
 
 delay_or_event_controlE<nodep>:  // IEEE: delay_or_event_control plus empty
                 /* empty */                             { $$ = nullptr; }
-        |        delay_control                          { $$ = $1; }
-        |        event_control                          { $$ = $1; }
-        |        yREPEAT '(' expr ')' event_control
+        |       delay_control                           { $$ = $1; }
+        |       event_control                           { $$ = $1; }
+        |       yREPEAT '(' expr ')' event_control
                         { $$ = $5; BBUNSUP($1, "Unsupported: repeat event control"); }
         ;
 
@@ -3031,7 +3118,7 @@ delay_control<delayp>:   //== IEEE: delay_control
 
 delay_value<nodeExprp>:         // ==IEEE:delay_value
         //                      // IEEE: ps_identifier
-                packageClassScopeE varRefBase           { $$ = AstDot::newIfPkg($<fl>2, $1, $2); }
+                idClass                                 { $$ = $1; }
         |       yaINTNUM                                { $$ = new AstConst{$<fl>1, *$1}; }
         |       yaFLOATNUM                              { $$ = new AstConst{$<fl>1, AstConst::RealDouble{}, $1}; }
         |       timeNumAdjusted                         { $$ = $1; }
@@ -3044,6 +3131,11 @@ delayExpr<nodeExprp>:
 minTypMax<nodeExprp>:           // IEEE: mintypmax_expression and constant_mintypmax_expression
                 delayExpr                               { $$ = $1; }
         |       delayExpr ':' delayExpr ':' delayExpr   { $$ = $3; MINTYPMAXDLYUNSUP($3); DEL($1); DEL($5); }
+        ;
+
+minTypMaxE<nodeExprp>:
+                /*empty*/                               { $$ = nullptr; }
+        |       minTypMax                               { $$ = $1; }
         ;
 
 netSigList<varp>:               // IEEE: list_of_port_identifiers
@@ -3176,7 +3268,7 @@ type_assignment<varp>:          // ==IEEE: type_assignment
         //                      // note exptOrDataType being a data_type is only for yPARAMETER yTYPE
                 idAny/*new-parameter*/ sigAttrListE
                         { $$ = VARDONEA($<fl>1, *$1, nullptr, $2); }
-        |       idAny/*new-parameter*/ sigAttrListE '=' data_type
+        |       idAny/*new-parameter*/ sigAttrListE '=' data_typeAny
                         { $$ = VARDONEA($<fl>1, *$1, nullptr, $2); $$->valuep($4); }
         ;
 
@@ -3215,24 +3307,24 @@ etcInst<nodep>:                 // IEEE: module_instantiation + gate_instantiati
         ;
 
 instDecl<nodep>:
-        //                      // Currently disambiguated from data_declaration based on
-        //                      // VARs being type, and cells non-type.
-        //                      // IEEE requires a '(' to disambiguate, we need TODO force this
-                id parameter_value_assignmentE {INSTPREP($<fl>1, *$1, $2);} instnameList ';'
+        //                      // Disambigurated from data_declaration based on
+        //                      // idInst which is found as IEEE requires a later '('
+                idInst parameter_value_assignmentInstE
+        /*mid*/         { INSTPREP($<fl>1, *$1, $2); }
+        /*cont*/    instnameList ';'
                         { $$ = $4;
                           GRAMMARP->m_impliedDecl = false;
                           if (GRAMMARP->m_instParamp) {
                               VL_DO_CLEAR(GRAMMARP->m_instParamp->deleteTree(),
                                           GRAMMARP->m_instParamp = nullptr);
                           } }
-        //                      // IEEE: interface_identifier' .' modport_identifier list_of_interface_identifiers
-        |       id/*interface*/ '.' idAny/*modport*/
-        /*mid*/         { VARRESET_NONLIST(VVarType::IFACEREF);
-                          AstNodeDType* const dtp = new AstIfaceRefDType{$<fl>1, $<fl>3, "", *$1, *$3};
-                          VARDTYPE(dtp); }
-        /*cont*/    mpInstnameList ';'
-                        { $$ = VARDONEP($5, nullptr, nullptr); }
-        //UNSUP: strengthSpecE for udp_instantiations
+        //
+        //                      // IEEE: part of udp_instance when no name_of_instance
+        //                      // Note no unpacked dimension nor list of instances
+        |       id
+        /*mid*/         { INSTPREP($<fl>1, *$1, nullptr); }
+        /*cont*/    instnameParenUdpn ';'
+                        { $$ = $3; GRAMMARP->m_impliedDecl = false; }
         ;
 
 mpInstnameList<nodep>:          // Similar to instnameList, but for modport instantiations which have no parenthesis
@@ -3250,12 +3342,13 @@ instnameList<nodep>:
         ;
 
 instnameParen<nodep>:
-                id instRangeListE '(' cellpinListE ')'
-                        { $$ = GRAMMARP->createCellOrIfaceRef($<fl>1, *$1, $4, $2, true); }
-        |       id instRangeListE
-                        { $$ = GRAMMARP->createCellOrIfaceRef($<fl>1, *$1, nullptr, $2, false); }
-        |       '(' cellpinListE ')'  // When UDP has empty name, unpacked dimensions must not be used
-                        { $$ = GRAMMARP->createCellOrIfaceRef($<fl>1, "", $2, nullptr, true); }
+                id instRangeListE '(' instPinListE ')'
+                        { $$ = GRAMMARP->createCell($<fl>1, *$1, $4, $2); }
+        ;
+
+instnameParenUdpn<nodep>:  // IEEE: part of udp_instance when no name_of_instance
+                '(' instPinListE ')'  // When UDP has empty name, unpacked dimensions must not be used
+                        { $$ = GRAMMARP->createCell($<fl>1, "", $2, nullptr); }
         ;
 
 instRangeListE<nodeRangep>:
@@ -3275,31 +3368,31 @@ instRange<nodeRangep>:
                         { $$ = new AstRange{$1, $2, $4}; }
         ;
 
-cellparamListE<pinp>:
-                { GRAMMARP->pinPush(); } cellparamItListE   { $$ = $2; GRAMMARP->pinPop(CRELINE()); }
+instParamListE<pinp>:
+                { GRAMMARP->pinPush(); } instParamItListE   { $$ = $2; GRAMMARP->pinPop(CRELINE()); }
         ;
 
-cellpinListE<pinp>:
-                { VARRESET_LIST(UNKNOWN); } cellpinItListE   { $$ = $2; VARRESET_NONLIST(UNKNOWN); }
+instPinListE<pinp>:
+                { VARRESET_LIST(UNKNOWN); } instPinItListE   { $$ = $2; VARRESET_NONLIST(UNKNOWN); }
         ;
 
-cellparamItListE<pinp>:         // IEEE: list_of_parameter_value_assignments/list_of_parameter_assignments
+instParamItListE<pinp>:         // IEEE: list_of_parameter_value_assignments/list_of_parameter_assignments
         //                      // Empty gets a node, to track class reference of #()
                 /*empty*/                               { $$ = new AstPin{CRELINE(), PINNUMINC(), "", nullptr}; }
-        |       cellparamItList                         { $$ = $1; }
+        |       instParamItList                         { $$ = $1; }
         ;
 
-cellparamItList<pinp>:          // IEEE: list_of_parameter_value_assignments/list_of_parameter_assignments
-                cellparamItem                           { $$ = $1; }
-        |       cellparamItList ',' cellparamItem       { $$ = addNextNull($1, $3); }
+instParamItList<pinp>:          // IEEE: list_of_parameter_value_assignments/list_of_parameter_assignments
+                instParamItem                           { $$ = $1; }
+        |       instParamItList ',' instParamItem       { $$ = addNextNull($1, $3); }
         ;
 
-cellpinItListE<pinp>:           // IEEE: list_of_port_connections
-                cellpinItemE                            { $$ = $1; }
-        |       cellpinItListE ',' cellpinItemE         { $$ = addNextNull($1, $3); }
+instPinItListE<pinp>:           // IEEE: list_of_port_connections
+                instPinItemE                            { $$ = $1; }
+        |       instPinItListE ',' instPinItemE         { $$ = addNextNull($1, $3); }
         ;
 
-cellparamItem<pinp>:            // IEEE: named_parameter_assignment + empty
+instParamItem<pinp>:            // IEEE: named_parameter_assignment + empty
         //                      // Note empty is not allowed in parameter lists
                 yP_DOTSTAR                              { $$ = new AstPin{$1, PINNUMINC(), ".*", nullptr}; }
         |       '.' idAny '(' ')'
@@ -3337,7 +3430,7 @@ cellparamItem<pinp>:            // IEEE: named_parameter_assignment + empty
         //UNSUP            $$ = new AstPin{FILELINE_OR_CRE($3), PINNUMINC(), "", $3}; }
         ;
 
-cellpinItemE<pinp>:             // IEEE: named_port_connection + empty
+instPinItemE<pinp>:             // IEEE: named_port_connection + empty
         //                      // Note empty can match either () or (,); V3LinkCells cleans up ()
                 /* empty: ',,' is legal */              { $$ = new AstPin{CRELINE(), PINNUMINC(), "", nullptr}; }
         |       yP_DOTSTAR                              { $$ = new AstPin{$1, PINNUMINC(), ".*", nullptr}; }
@@ -3449,67 +3542,67 @@ seq_block<nodep>:               // ==IEEE: seq_block
         //                      // So need AstBegin's even if unnamed to scope variables down
                 seq_blockFront blockDeclStmtListE yEND endLabelE
                         { $$ = $1; $1->addStmtsp($2);
-                          SYMP->popScope($1); GRAMMARP->endLabel($<fl>4, $1, $4); }
+                          GRAMMARP->endLabel($<fl>4, $1, $4); }
         ;
 
 seq_blockPreId<nodep>:          // IEEE: seq_block, but called with leading ID
                 seq_blockFrontPreId blockDeclStmtListE yEND endLabelE
                         { $$ = $1; $1->addStmtsp($2);
-                          SYMP->popScope($1); GRAMMARP->endLabel($<fl>4, $1, $4); }
+                          GRAMMARP->endLabel($<fl>4, $1, $4); }
         ;
 
 par_block<nodep>:               // ==IEEE: par_block
                 par_blockFront blockDeclStmtListE yJOIN endLabelE
                         { $$ = $1; $1->joinType(VJoinType::JOIN);
                           V3ParseGrammar::addForkStmtsp($1, $2);
-                          SYMP->popScope($1); GRAMMARP->endLabel($<fl>4, $1, $4); }
+                          GRAMMARP->endLabel($<fl>4, $1, $4); }
         |       par_blockFront blockDeclStmtListE yJOIN_ANY endLabelE
                         { $$ = $1; $1->joinType(VJoinType::JOIN_ANY);
                           V3ParseGrammar::addForkStmtsp($1, $2);
-                          SYMP->popScope($1); GRAMMARP->endLabel($<fl>4, $1, $4); }
+                          GRAMMARP->endLabel($<fl>4, $1, $4); }
         |       par_blockFront blockDeclStmtListE yJOIN_NONE endLabelE
                         { $$ = $1; $1->joinType(VJoinType::JOIN_NONE);
                           V3ParseGrammar::addForkStmtsp($1, $2);
-                          SYMP->popScope($1); GRAMMARP->endLabel($<fl>4, $1, $4); }
+                          GRAMMARP->endLabel($<fl>4, $1, $4); }
         ;
 
 par_blockPreId<nodep>:          // ==IEEE: par_block but called with leading ID
                 par_blockFrontPreId blockDeclStmtListE yJOIN endLabelE
                         { $$ = $1; $1->joinType(VJoinType::JOIN);
                           V3ParseGrammar::addForkStmtsp($1, $2);
-                          SYMP->popScope($1); GRAMMARP->endLabel($<fl>4, $1, $4); }
+                          GRAMMARP->endLabel($<fl>4, $1, $4); }
         |       par_blockFrontPreId blockDeclStmtListE yJOIN_ANY endLabelE
                         { $$ = $1; $1->joinType(VJoinType::JOIN_ANY);
                           V3ParseGrammar::addForkStmtsp($1, $2);
-                          SYMP->popScope($1); GRAMMARP->endLabel($<fl>4, $1, $4); }
+                          GRAMMARP->endLabel($<fl>4, $1, $4); }
         |       par_blockFrontPreId blockDeclStmtListE yJOIN_NONE endLabelE
                         { $$ = $1; $1->joinType(VJoinType::JOIN_NONE);
                           V3ParseGrammar::addForkStmtsp($1, $2);
-                          SYMP->popScope($1); GRAMMARP->endLabel($<fl>4, $1, $4); }
+                          GRAMMARP->endLabel($<fl>4, $1, $4); }
         ;
 
 seq_blockFront<beginp>:         // IEEE: part of seq_block
                 yBEGIN
-                        { $$ = new AstBegin{$1, "", nullptr};  SYMP->pushNew($$); }
+                        { $$ = new AstBegin{$1, "", nullptr}; }
         |       yBEGIN ':' idAny/*new-block_identifier*/
-                        { $$ = new AstBegin{$<fl>3, *$3, nullptr}; SYMP->pushNew($$); }
+                        { $$ = new AstBegin{$<fl>3, *$3, nullptr}; }
         ;
 
 par_blockFront<forkp>:          // IEEE: part of par_block
                 yFORK
-                        { $$ = new AstFork{$1, "", nullptr};  SYMP->pushNew($$); }
+                        { $$ = new AstFork{$1, "", nullptr}; }
         |       yFORK ':' idAny/*new-block_identifier*/
-                        { $$ = new AstFork{$<fl>3, *$3, nullptr}; SYMP->pushNew($$); }
+                        { $$ = new AstFork{$<fl>3, *$3, nullptr}; }
         ;
 
 seq_blockFrontPreId<beginp>:    // IEEE: part of seq_block/stmt with leading id
                 id/*block_identifier*/ yP_COLON__BEGIN yBEGIN
-                        { $$ = new AstBegin{$3, *$1, nullptr}; SYMP->pushNew($$); }
+                        { $$ = new AstBegin{$3, *$1, nullptr}; }
         ;
 
 par_blockFrontPreId<forkp>:     // IEEE: part of par_block/stmt with leading id
                 id/*block_identifier*/ yP_COLON__FORK yFORK
-                        { $$ = new AstFork{$3, *$1, nullptr}; SYMP->pushNew($$); }
+                        { $$ = new AstFork{$3, *$1, nullptr}; }
         ;
 
 
@@ -3528,6 +3621,9 @@ blockDeclStmtListE<nodep>:      // IEEE: [ { block_item_declaration } { statemen
 block_item_declarationList<nodep>:      // IEEE: [ block_item_declaration ]
                 block_item_declaration                  { $$ = $1; }
         |       block_item_declarationList block_item_declaration       { $$ = addNextNull($1, $2); }
+        //
+        |       block_item_declarationList error ';'    { $$ = $1; }
+        |       error ';'                               { $$ = nullptr; }
         ;
 
 block_item_declaration<nodep>:  // ==IEEE: block_item_declaration
@@ -3539,6 +3635,8 @@ block_item_declaration<nodep>:  // ==IEEE: block_item_declaration
 stmtList<nodep>:
                 stmtBlock                               { $$ = $1; }
         |       stmtList stmtBlock                      { $$ = addNextNull($1, $2); }
+        //
+        |       stmtList error ';'                      { $$ = $1; }
         ;
 
 stmt<nodep>:                    // IEEE: statement_or_null == function_statement_or_null
@@ -3559,7 +3657,7 @@ statement_item<nodep>:          // IEEE: statement_item
         //                      // IEEE: blocking_assignment
         //                      // 1800-2009 restricts LHS of assignment to new to not have a range
         //                      // This is ignored to avoid conflicts
-        |       fexprLvalue '=' class_new ';'           { $$ = new AstAssign{$2, $1, $3}; }
+        |       fexprLvalue '=' class_newNoScope ';'    { $$ = new AstAssign{$2, $1, $3}; }
         |       fexprLvalue '=' dynamic_array_new ';'   { $$ = new AstAssign{$2, $1, $3}; }
         //                      // IEEE: inc_or_dec_expression
         |       finc_or_dec_expression ';'              { $$ = $1; }
@@ -3581,15 +3679,15 @@ statement_item<nodep>:          // IEEE: statement_item
                         { $$ = new AstRelease{$1, $2}; v3Global.setHasForceableSignals(); }
         //
         //                      // IEEE: case_statement
-        |       unique_priorityE caseStart caseAttrE case_itemListE yENDCASE
+        |       unique_priorityE caseStart caseAttrE case_itemList yENDCASE
                         { $$ = $2; if ($4) $2->addItemsp($4);
                           if ($1 == uniq_UNIQUE) $2->uniquePragma(true);
                           if ($1 == uniq_UNIQUE0) $2->unique0Pragma(true);
                           if ($1 == uniq_PRIORITY) $2->priorityPragma(true); }
-        // &&& is part of expr so case_patternListE aliases to case_itemListE
-        |       unique_priorityE caseStart caseAttrE yMATCHES case_patternListE yENDCASE
+        // &&& is part of expr so case_patternList aliases to case_itemList
+        |       unique_priorityE caseStart caseAttrE yMATCHES case_itemList yENDCASE
                         { $$ = nullptr; BBUNSUP($4, "Unsupported: matches (for tagged union)"); }
-        |       unique_priorityE caseStart caseAttrE yINSIDE case_insideListE yENDCASE
+        |       unique_priorityE caseStart caseAttrE yINSIDE case_inside_itemList yENDCASE
                         { $$ = $2; if ($5) $2->addItemsp($5);
                           if (!$2->caseSimple()) $4->v3error("Illegal to have inside on a casex/casez");
                           $2->caseInsideSet();
@@ -3645,7 +3743,7 @@ statement_item<nodep>:          // IEEE: statement_item
         |       yDISABLE yFORK ';'                      { $$ = new AstDisableFork{$1}; }
         |       yDISABLE idAny/*UNSUP: hierarchical_identifier-task_or_block*/ ';'
                         { $$ = new AstDisable{$1, *$2}; }
-        |       yDISABLE idAny '.' idDotted ';'
+        |       yDISABLE idAny '.' idDottedSel ';'
                         { $$ = nullptr; BBUNSUP($4, "Unsupported: disable with '.'"); }
         //                      // IEEE: event_trigger
         |       yP_MINUSGT expr ';'
@@ -3721,8 +3819,6 @@ statement_item<nodep>:          // IEEE: statement_item
                         { $$ = nullptr; BBUNSUP($1, "Unsupported: expect"); }
         |       yEXPECT '(' property_spec ')' yELSE stmt
                         { $$ = nullptr; BBUNSUP($1, "Unsupported: expect"); }
-        //
-        |       error ';'                               { $$ = nullptr; }
         ;
 
 statementFor<beginp>:           // IEEE: part of statement
@@ -3734,7 +3830,7 @@ statementFor<beginp>:           // IEEE: part of statement
                           $$->addStmtsp(new AstWhile{$1, new AstConst{$1, AstConst::BitTrue{}}, $7, $5}); }
         ;
 beginForParen:  // IEEE: Part of statement (for loop beginning paren)
-                '('                                     { VARRESET(); }
+                '('                                     { VARRESET_NONLIST(UNKNOWN); }
         ;
 
 statementVerilatorPragmas<nodep>:
@@ -3777,17 +3873,21 @@ inc_or_dec_expression<nodeExprp>:   // ==IEEE: inc_or_dec_expression
         //                      // Need fexprScope instead of variable_lvalue to prevent conflict
                 ~l~exprScope yP_PLUSPLUS
                         { $<fl>$ = $<fl>1; $$ = new AstPostAdd{$2, new AstConst{$2, AstConst::StringToParse{}, "'b1"},
-                                                               $1, $1->cloneTreePure(true)}; }
+                                                               // Purity checked in V3LinkInc
+                                                               $1, $1->cloneTree(true)}; }
         |       ~l~exprScope yP_MINUSMINUS
                         { $<fl>$ = $<fl>1; $$ = new AstPostSub{$2, new AstConst{$2, AstConst::StringToParse{}, "'b1"},
-                                                               $1, $1->cloneTreePure(true)}; }
+                                                               // Purity checked in V3LinkInc
+                                                               $1, $1->cloneTree(true)}; }
         //                      // Need expr instead of variable_lvalue to prevent conflict
         |       yP_PLUSPLUS     expr
                         { $<fl>$ = $<fl>1; $$ = new AstPreAdd{$1, new AstConst{$1, AstConst::StringToParse{}, "'b1"},
-                                                              $2, $2->cloneTreePure(true)}; }
+                                                              // Purity checked in V3LinkInc
+                                                              $2, $2->cloneTree(true)}; }
         |       yP_MINUSMINUS   expr
                         { $<fl>$ = $<fl>1; $$ = new AstPreSub{$1, new AstConst{$1, AstConst::StringToParse{}, "'b1"},
-                                                              $2, $2->cloneTreePure(true)}; }
+                                                              // Purity checked in V3LinkInc
+                                                              $2, $2->cloneTree(true)}; }
         ;
 
 finc_or_dec_expression<nodeExprp>:  // ==IEEE: inc_or_dec_expression
@@ -3810,8 +3910,8 @@ pinc_or_dec_expression<nodeExprp>:  // IEEE: inc_or_dec_expression (for property
 //UNSUP         BISONPRE_COPY(inc_or_dec_expression,{s/~l~/pev_/g})     // {copied}
 //UNSUP ;
 
-class_new<nodeExprp>:           // ==IEEE: class_new
-        //                      // Special precence so (...) doesn't match expr
+class_newNoScope<nodeExprp>:    // IEEE: class_new but no packageClassScope (issue #4199)
+        //                      // Special precedence so (...) doesn't match expr
                 yNEW__ETC                               { $$ = new AstNew{$1,  nullptr}; }
         |       yNEW__ETC expr                          { $$ = new AstNewCopy{$1, $2}; }
         |       yNEW__PAREN '(' list_of_argumentsE ')'  { $$ = new AstNew{$1, $3}; }
@@ -3847,20 +3947,6 @@ caseAttrE:
         |       caseAttrE yVL_PARALLEL_CASE             { GRAMMARP->m_caseAttrp->parallelPragma(true); }
         ;
 
-case_patternListE<caseItemp>:  // IEEE: case_pattern_item
-                case_itemListE                          { $$ = $1; }
-        ;
-
-case_itemListE<caseItemp>:      // IEEE: [ { case_item } ]
-                /* empty */                             { $$ = nullptr; }
-        |       case_itemList                           { $$ = $1; }
-        ;
-
-case_insideListE<caseItemp>:    // IEEE: [ { case_inside_item } ]
-                /* empty */                             { $$ = nullptr; }
-        |       case_inside_itemList                    { $$ = $1; }
-        ;
-
 case_itemList<caseItemp>:       // IEEE: { case_item + ... }
                 caseCondList colon stmtBlock                    { $$ = new AstCaseItem{$2, $1, $3}; }
         |       yDEFAULT colon stmtBlock                        { $$ = new AstCaseItem{$1, nullptr, $3}; }
@@ -3893,11 +3979,11 @@ range_list<nodeExprp>:     // ==IEEE: range_list/open_range_list + value_range/o
 value_range<nodeExprp>:         // ==IEEE: value_range/open_value_range
                 expr                                    { $$ = $1; }
         |       '[' expr ':' expr ']'                   { $$ = new AstInsideRange{$1, $2, $4}; }
-        //              // IEEE-2023: added all four:
-        //              // Skipped as '$' is part of our expr
-        //              // IEEE-2023: '[' '$' ':' expr ']'
-        //              // Skipped as '$' is part of our expr
-        //              // IEEE-2023: '[' expr ':' '$' ']'
+        //                      // IEEE-2023: added all four:
+        //                      // Skipped as '$' is part of our expr
+        //                      // IEEE-2023: '[' '$' ':' expr ']'
+        //                      // Skipped as '$' is part of our expr
+        //                      // IEEE-2023: '[' expr ':' '$' ']'
         |       '[' expr yP_PLUSSLASHMINUS expr ']'
                         { $$ = nullptr; BBUNSUP($1, "Unsupported: +/- range"); }
         |       '[' expr yP_PLUSPCTMINUS expr ']'
@@ -3907,16 +3993,16 @@ value_range<nodeExprp>:         // ==IEEE: value_range/open_value_range
 covergroup_value_range<nodeExprp>:  // ==IEEE-2012: covergroup_value_range
                 cgexpr                                  { $$ = $1; }
         |       '[' cgexpr ':' cgexpr ']'
-                        { $$ = nullptr; BBUNSUP($1, "Unsupported: covergroup value range"); }
-        //              // IEEE-2023: added all four:
-        //              // Skipped as '$' is part of our expr
-        //              // IEEE-2023: '[' '$' ':' cgexpr ']'
-        //              // Skipped as '$' is part of our expr
-        //              // IEEE-2023: '[' cgexpr ':' '$' ']'
+                        { $$ = nullptr; BBCOVERIGN($1, "Ignoring unsupported: covergroup value range"); }
+        //                      // IEEE-2023: added all four:
+        //                      // Skipped as '$' is part of our expr
+        //                      // IEEE-2023: '[' '$' ':' cgexpr ']'
+        //                      // Skipped as '$' is part of our expr
+        //                      // IEEE-2023: '[' cgexpr ':' '$' ']'
         |       '[' cgexpr yP_PLUSSLASHMINUS cgexpr ']'
-                        { $$ = nullptr; BBUNSUP($1, "Unsupported: covergroup value range"); }
+                        { $$ = nullptr; BBCOVERIGN($1, "Ignoring unsupported: covergroup value range"); }
         |       '[' cgexpr yP_PLUSPCTMINUS cgexpr ']'
-                        { $$ = nullptr; BBUNSUP($1, "Unsupported: covergroup value range"); }
+                        { $$ = nullptr; BBCOVERIGN($1, "Ignoring unsupported: covergroup value range"); }
         ;
 
 caseCondList<nodeExprp>:        // IEEE: part of case_item
@@ -3931,8 +4017,8 @@ patternNoExpr<nodep>:           // IEEE: pattern **Excluding Expr*
                         { $$ = nullptr; BBUNSUP($1, "Unsupported: '{} tagged patterns"); }
         //                      // IEEE: "expr" excluded; expand in callers
         //                      // "yTAGGED idAny [expr]" Already part of expr
-        //UNSUP yTAGGED idAny/*member_identifier*/ patternNoExpr
-        //UNSUP         { $$ = nullptr; BBUNSUP($1, "Unsupported: '{} tagged patterns"); }
+        |       yTAGGED idAny/*member_identifier*/ patternNoExpr
+                        { $$ = nullptr; BBUNSUP($1, "Unsupported: '{} tagged patterns"); }
         //                      // "yP_TICKBRA patternList '}'" part of expr under assignment_pattern
         ;
 
@@ -3972,11 +4058,18 @@ patternKey<nodep>:              // IEEE: merge structure_pattern_key, array_patt
         //                      //   "foo"member (if structure)
         //                      //   So for now we only allow a true constant number, or an
         //                      //   identifier which we treat as a structure member name
-                yaINTNUM                                { $$ = new AstConst{$<fl>1, *$1}; }
-        |       yaFLOATNUM                              { $$ = new AstConst{$<fl>1, AstConst::RealDouble{}, $1}; }
-        |       id                                      { $$ = new AstText{$<fl>1, *$1}; }
-        |       strAsInt                                { $$ = $1; }
-        |       simple_typeNoRef                        { $$ = $1; }
+                yaINTNUM
+                        { $$ = new AstConst{$<fl>1, *$1}; }
+        |       '-' yaINTNUM
+                        { V3Number neg{*$2}; neg.opNegate(*$2); $$ = new AstConst{$<fl>2, neg}; }
+        |       yaFLOATNUM
+                        { $$ = new AstConst{$<fl>1, AstConst::RealDouble{}, $1}; }
+        |       id
+                        { $$ = new AstText{$<fl>1, *$1}; }
+        |       strAsInt
+                        { $$ = $1; }
+        |       simple_typeNoRef
+                        { $$ = $1; }
         //                      // expanded from simple_type ps_type_identifier (part of simple_type)
         //                      // expanded from simple_type ps_parameter_identifier (part of simple_type)
         |       packageClassScopeE idType
@@ -4090,20 +4183,20 @@ funcRef<nodeExprp>:             // IEEE: part of tf_call
         |       packageClassScope id '(' list_of_argumentsE ')'
                         { $$ = AstDot::newIfPkg($<fl>2, $1, new AstFuncRef{$<fl>2, *$2, $4}); }
         //UNSUP list_of_argumentE should be pev_list_of_argumentE
-        //UNSUP: idDotted is really just id to allow dotted method calls
+        //UNSUP: idDottedSel is really just id to allow dotted method calls
         ;
 
 task_subroutine_callNoSemi<nodep>:  // similar to IEEE task_subroutine_call but without ';'
         //                      // Expr included here to resolve our not knowing what is a method call
         //                      // Expr here must result in a subroutine_call
-                task_subroutine_callNoMethod           { $$ = $1->makeStmt(); }
+                task_subroutine_callNoMethod            { $$ = $1->makeStmt(); }
         |       fexpr '.' task_subroutine_callNoMethod  { $$ = (new AstDot{$<fl>2, false, $1, $3})->makeStmt(); }
-        |       system_t_call                          { $$ = $1; }
+        |       system_t_call                           { $$ = $1; }
         //                      // Not here in IEEE; from class_constructor_declaration
         //                      // Because we've joined class_constructor_declaration into generic functions
         //                      // Way over-permissive;
         //                      // IEEE: [ ySUPER '.' yNEW [ '(' list_of_arguments ')' ] ';' ]
-        |       fexpr '.' class_new                    { $$ = (new AstDot{$<fl>2, false, $1, $3})->makeStmt(); }
+        |       fexpr '.' class_newNoScope              { $$ = (new AstDot{$<fl>2, false, $1, $3})->makeStmt(); }
         ;
 
 task_subroutine_callNoMethod<nodeExprp>:    // function_subroutine_callNoMethod (as task)
@@ -4134,7 +4227,6 @@ function_subroutine_callNoMethod<nodeExprp>:        // IEEE: function_subroutine
         //                      // We implement randomize as a normal funcRef, since randomize isn't a keyword
         //                      // Note yNULL is already part of expressions, so they come for free
         |       funcRef yWITH__CUR constraint_block     { $$ = new AstWithParse{$2, $1, $3}; }
-        |       funcRef yWITH__CUR '{' '}'              { $$ = new AstWithParse{$2, $1, nullptr}; }
         ;
 
 system_t_call<nodeStmtp>:       // IEEE: system_tf_call (as task)
@@ -4143,7 +4235,7 @@ system_t_call<nodeStmtp>:       // IEEE: system_tf_call (as task)
                                                           refp->pli(true);
                                                           $$ = refp->makeStmt(); }
         //
-        |       yD_DUMPPORTS '(' idDotted ',' expr ')'  { $$ = new AstDumpCtl{$<fl>1, VDumpCtlType::FILE, $5}; DEL($3);
+        |       yD_DUMPPORTS '(' idDottedSel ',' expr ')'  { $$ = new AstDumpCtl{$<fl>1, VDumpCtlType::FILE, $5}; DEL($3);
                                                           $$->addNext(new AstDumpCtl{$<fl>1, VDumpCtlType::VARS,
                                                                                      new AstConst{$<fl>1, 1}}); }
         |       yD_DUMPPORTS '(' ',' expr ')'           { $$ = new AstDumpCtl{$<fl>1, VDumpCtlType::FILE, $4};
@@ -4373,6 +4465,7 @@ system_f_call_or_t<nodeExprp>:      // IEEE: part of system_tf_call (can be task
         |       yD_HYPOT '(' expr ',' expr ')'          { $$ = new AstHypotD{$1, $3, $5}; }
         |       yD_INCREMENT '(' exprOrDataType ')'     { $$ = new AstAttrOf{$1, VAttrType::DIM_INCREMENT, $3, nullptr}; }
         |       yD_INCREMENT '(' exprOrDataType ',' expr ')'    { $$ = new AstAttrOf{$1, VAttrType::DIM_INCREMENT, $3, $5}; }
+        |       yD_INFERRED_DISABLE parenE              { $$ = new AstInferredDisable{$1}; }
         |       yD_ISUNBOUNDED '(' expr ')'             { $$ = new AstIsUnbounded{$1, $3}; }
         |       yD_ISUNKNOWN '(' expr ')'               { $$ = new AstIsUnknown{$1, $3}; }
         |       yD_ITOR '(' expr ')'                    { $$ = new AstIToRD{$1, $3}; }
@@ -4471,7 +4564,15 @@ property_actual_arg<nodeExprp>:  // ==IEEE: property_actual_arg
 exprOrDataType<nodep>:          // expr | data_type: combined to prevent conflicts
                 expr                                    { $$ = $1; }
         //                      // data_type includes id that overlaps expr, so special flavor
-        |       data_type                               { $$ = $1; }
+        //                      // data_type expanded:
+        |       data_typeNoRef                          { $$ = $1; }
+        //
+        //                      // Conflicts with non-type id, resolved in V3LinkDot
+        //                      // NO: packageClassScopeE idType packed_dimensionListE
+        //
+        |       packageClassScopeE idType parameter_value_assignmentClass packed_dimensionListE
+                        { AstRefDType* const refp = new AstRefDType{$<fl>2, *$2, $1, $3};
+                          $$ = GRAMMARP->createArray(refp, $4, true); }
         //                      // not in spec, but needed for $past(sig,1,,@(posedge clk))
         //UNSUP event_control                           { }
         ;
@@ -4501,7 +4602,7 @@ list_of_argumentsE<nodeExprp>:  // IEEE: [list_of_arguments]
 
 task_declaration<nodeFTaskp>:   // ==IEEE: task_declaration
                 yTASK dynamic_override_specifiersE lifetimeE taskId tfGuts yENDTASK endLabelE
-                        { $$ = $4; $$->addStmtsp($5); SYMP->popScope($$);
+                        { $$ = $4; $$->addStmtsp($5);
                           $$->baseOverride($2);
                           $$->lifetime($3);
                           GRAMMARP->endLabel($<fl>7, $$, $7); }
@@ -4509,9 +4610,9 @@ task_declaration<nodeFTaskp>:   // ==IEEE: task_declaration
 
 task_prototype<nodeFTaskp>:             // ==IEEE: task_prototype
                 yTASK dynamic_override_specifiersE taskId '(' tf_port_listE ')'
-                        { $$ = $3; $$->addStmtsp($5); $$->prototype(true); SYMP->popScope($$); }
+                        { $$ = $3; $$->addStmtsp($5); $$->prototype(true); }
         |       yTASK dynamic_override_specifiersE taskId
-                        { $$ = $3; $$->prototype(true); SYMP->popScope($$); }
+                        { $$ = $3; $$->prototype(true); }
         ;
 
 function_declaration<nodeFTaskp>:       // IEEE: function_declaration + function_body_declaration
@@ -4519,30 +4620,28 @@ function_declaration<nodeFTaskp>:       // IEEE: function_declaration + function
                         { $$ = $4; $4->attrIsolateAssign($5); $$->addStmtsp($6);
                           $$->baseOverride($2);
                           $$->lifetime($3);
-                          SYMP->popScope($$);
                           GRAMMARP->endLabel($<fl>8, $$, $8); }
         |       yFUNCTION dynamic_override_specifiersE lifetimeE funcIdNew funcIsolateE tfNewGuts yENDFUNCTION endLabelE
                         { $$ = $4; $4->attrIsolateAssign($5); $$->addStmtsp($6);
                           $$->baseOverride($2);
                           $$->lifetime($3);
-                          SYMP->popScope($$);
                           GRAMMARP->endLabel($<fl>8, $$, $8); }
         ;
 
 function_prototype<nodeFTaskp>: // IEEE: function_prototype
                 yFUNCTION dynamic_override_specifiersE funcId '(' tf_port_listE ')'
-                        { $$ = $3; $$->addStmtsp($5); $$->prototype(true); SYMP->popScope($$); }
+                        { $$ = $3; $$->addStmtsp($5); $$->prototype(true); }
         |       yFUNCTION dynamic_override_specifiersE funcId
-                        { $$ = $3; $$->prototype(true); SYMP->popScope($$); }
+                        { $$ = $3; $$->prototype(true); }
         ;
 
 class_constructor_prototype<nodeFTaskp>:        // ==IEEE: class_constructor_prototype
         //                      // IEEE has no dynamic_override_specifiersE,
         //                      // but required to avoid conflicts, so we must check after parsing
                 yFUNCTION dynamic_override_specifiersE funcIdNew '(' class_constructor_arg_listE ')' ';'
-                        { $$ = $3; $$->addStmtsp($5); $$->prototype(true); SYMP->popScope($$); }
+                        { $$ = $3; $$->addStmtsp($5); $$->prototype(true); }
         |       yFUNCTION dynamic_override_specifiersE funcIdNew ';'
-                        { $$ = $3; $$->prototype(true); SYMP->popScope($$); }
+                        { $$ = $3; $$->prototype(true); }
         ;
 
 funcIsolateE<cint>:
@@ -4568,40 +4667,42 @@ lifetime<lifetime>:             // ==IEEE: lifetime
 
 taskId<nodeFTaskp>:
                 id
-                        { $$ = new AstTask{$<fl>$, *$1, nullptr};
-                          SYMP->pushNewUnderNodeOrCurrent($$, nullptr); }
+                        { $$ = new AstTask{$<fl>$, *$1, nullptr}; }
         //
         |       id/*interface_identifier*/ '.' idAny
                         { $$ = new AstTask{$<fl>$, *$3, nullptr};
-                          BBUNSUP($2, "Unsupported: Out of block function declaration");
-                          SYMP->pushNewUnderNodeOrCurrent($$, nullptr); }
+                          BBUNSUP($2, "Unsupported: Out of block function declaration"); }
         //
         |       packageClassScope id
                         { $$ = new AstTask{$<fl>$, *$2, nullptr};
                           $$->classOrPackagep($1);
-                          SYMP->pushNewUnderNodeOrCurrent($$, $<scp>1); }
+                          $$->classMethod(true); }
         ;
 
-funcId<nodeFTaskp>:                     // IEEE: function_data_type_or_implicit + part of function_body_declaration
+funcId<nodeFTaskp>:             // IEEE: function_data_type_or_implicit + part of function_body_declaration
         //                      // IEEE: function_data_type_or_implicit must be expanded here to prevent conflict
         //                      // function_data_type expanded here to prevent conflicts with
         //                      // implicit_type:empty vs data_type:ID
                 /**/ fIdScoped
                         { $$ = $1;
-                          $$->fvarp(new AstBasicDType{$<fl>1, LOGIC_IMPLICIT});
-                          SYMP->pushNewUnderNodeOrCurrent($$, $<scp>1); }
+                          $$->fvarp(new AstBasicDType{$<fl>1, LOGIC_IMPLICIT}); }
         |       signingE rangeList fIdScoped
                         { $$ = $3;
-                          $$->fvarp(GRAMMARP->addRange(new AstBasicDType{$<fl>3, LOGIC_IMPLICIT, $1}, $2, true));
-                          SYMP->pushNewUnderNodeOrCurrent($$, $<scp>3); }
+                          $$->fvarp(GRAMMARP->addRange(new AstBasicDType{$<fl>3, LOGIC_IMPLICIT, $1}, $2, true)); }
         |       signing fIdScoped
                         { $$ = $2;
-                          $$->fvarp(new AstBasicDType{$<fl>2, LOGIC_IMPLICIT, $1});
-                          SYMP->pushNewUnderNodeOrCurrent($$, $<scp>2); }
-        |       data_type fIdScoped
+                          $$->fvarp(new AstBasicDType{$<fl>2, LOGIC_IMPLICIT, $1}); }
+        |       data_typeNoRef fIdScoped
                         { $$ = $2;
-                          $$->fvarp($1);
-                          SYMP->pushNewUnderNodeOrCurrent($$, $<scp>2); }
+                          $$->fvarp($1); }
+        |       packageClassScopeE idInstType packed_dimensionListE fIdScoped
+                        { AstRefDType* const refp = new AstRefDType{$<fl>2, *$2, $1, nullptr};
+                          $$ = $4;
+                          $$->fvarp(GRAMMARP->createArray(refp, $3, true)); }
+        |       packageClassScopeE idInstType parameter_value_assignmentClass packed_dimensionListE fIdScoped
+                        { AstRefDType* const refp = new AstRefDType{$<fl>2, *$2, $1, $3};
+                          $$ = $5;
+                          $$->fvarp(GRAMMARP->createArray(refp, $4, true)); }
         //                      // To verilator tasks are the same as void functions (we separately detect time passing)
         |       yVOID taskId
                         { $$ = $2; }
@@ -4610,36 +4711,32 @@ funcId<nodeFTaskp>:                     // IEEE: function_data_type_or_implicit 
 funcIdNew<nodeFTaskp>:          // IEEE: from class_constructor_declaration
                 yNEW__ETC
                         { $$ = new AstFunc{$<fl>1, "new", nullptr, nullptr};
-                          $$->isConstructor(true);
-                          SYMP->pushNewUnder($$, nullptr); }
+                          $$->isConstructor(true); }
         |       yNEW__PAREN
                         { $$ = new AstFunc{$<fl>1, "new", nullptr, nullptr};
-                          $$->isConstructor(true);
-                          SYMP->pushNewUnder($$, nullptr); }
+                          $$->isConstructor(true); }
         |       packageClassScopeNoId yNEW__PAREN
                         { $$ = new AstFunc{$<fl>2, "new", nullptr, nullptr};
                           $$->classOrPackagep($1);
                           $$->isConstructor(true);
-                          SYMP->pushNewUnderNodeOrCurrent($$, $<scp>1); }
+                          $$->classMethod(true); }
         ;
 
 fIdScoped<funcp>:               // IEEE: part of function_body_declaration/task_body_declaration
         //                      // IEEE: [ interface_identifier '.' | class_scope ] function_identifier
                 id
                         { $<fl>$ = $<fl>1;
-                          $<scp>$ = nullptr;
                           $$ = new AstFunc{$<fl>$, *$1, nullptr, nullptr}; }
         //
         |       id/*interface_identifier*/ '.' idAny
                         { $<fl>$ = $<fl>1;
-                          $<scp>$ = nullptr;
                           $$ = new AstFunc{$<fl>$, *$1, nullptr, nullptr};
                           BBUNSUP($2, "Unsupported: Out of block function declaration"); }
         //
         |       packageClassScope id
                         { $<fl>$ = $<fl>1;
-                          $<scp>$ = $<scp>1;
                           $$ = new AstFunc{$<fl>$, *$2, nullptr, nullptr};
+                          $$->classMethod(true);
                           $$->classOrPackagep($1); }
         ;
 
@@ -4779,9 +4876,7 @@ dpi_import_export<nodep>:       // ==IEEE: dpi_import_export
                           $5->dpiContext($3 == iprop_CONTEXT);
                           $5->dpiPure($3 == iprop_PURE);
                           $5->dpiImport(true);
-                          GRAMMARP->checkDpiVer($1, *$2); v3Global.dpi(true);
-                          if ($$->prettyName()[0]=='$') SYMP->reinsert($$, nullptr, $$->prettyName());  // For $SysTF overriding
-                          SYMP->reinsert($$); }
+                          GRAMMARP->checkDpiVer($1, *$2); v3Global.dpi(true); }
         |       yIMPORT yaSTRING dpi_tf_import_propertyE dpi_importLabelE task_prototype ';'
                         { $$ = $5;
                           if (*$4 != "") $5->cname(*$4);
@@ -4789,9 +4884,7 @@ dpi_import_export<nodep>:       // ==IEEE: dpi_import_export
                           $5->dpiPure($3 == iprop_PURE);
                           $5->dpiImport(true);
                           $5->dpiTask(true);
-                          GRAMMARP->checkDpiVer($1, *$2); v3Global.dpi(true);
-                          if ($$->prettyName()[0]=='$') SYMP->reinsert($$, nullptr, $$->prettyName());  // For $SysTF overriding
-                          SYMP->reinsert($$); }
+                          GRAMMARP->checkDpiVer($1, *$2); v3Global.dpi(true); }
         |       yEXPORT yaSTRING dpi_importLabelE yFUNCTION idAny ';'
                         { $$ = new AstDpiExport{$<fl>5, *$5, *$3};
                           GRAMMARP->checkDpiVer($1, *$2); v3Global.dpi(true); }
@@ -4954,8 +5047,9 @@ expr<nodeExprp>:                // IEEE: part of expression/constant_expression/
         |       ~l~expr yINSIDE '{' range_list '}'      { $$ = new AstInside{$2, $1, $4}; }
         //
         //                      // IEEE: tagged_union_expression
-        //UNSUP yTAGGED id/*member*/ %prec prTAGGED             { UNSUP }
-        //UNSUP yTAGGED id/*member*/ %prec prTAGGED primary     { UNSUP }
+        //UNSUP yTAGGED id/*member*/ %prec prTAGGED             { $$ = $2; BBUNSUP("tagged reference"); }
+        //                      // Spec only allows primary
+        //UNSUP yTAGGED id/*member*/ %prec prTAGGED expr /*primary*/     { $$ = $2; BBUNSUP("tagged reference"); }
         //
         //======================// IEEE: primary/constant_primary
         //
@@ -5020,9 +5114,8 @@ expr<nodeExprp>:                // IEEE: part of expression/constant_expression/
                         { $$ = new AstCast{$2, $4, VFlagChildDType{}, $1}; }
         //                      // expanded from simple_type ps_type_identifier (part of simple_type)
         //                      // expanded from simple_type ps_parameter_identifier (part of simple_type)
-        |       packageClassScopeE idType yP_TICK '(' expr ')'
-                        { $$ = new AstCast{$3, $5, VFlagChildDType{},
-                                           new AstRefDType{$<fl>2, *$2, $1, nullptr}}; }
+        //                      // Causes conflict, so handled post-parse
+        //                      // NO: packageClassScopeE idType yP_TICK '(' expr ')'
         //
         |       yTYPE__ETC '(' exprOrDataType ')' yP_TICK '(' expr ')'
                         { $$ = new AstCast{$1, $7, VFlagChildDType{},
@@ -5308,13 +5401,9 @@ streaming_concatenation<nodeStreamp>: // ==IEEE: streaming_concatenation
         |       '{' yP_SRIGHT stream_concatenation '}'
                         { $$ = new AstStreamR{$2, $3, new AstConst{$2, 1}}; }
         |       '{' yP_SLEFT  stream_expressionOrDataType stream_concatenation '}'
-                        { AstNodeExpr* const bitsp = VN_IS($3, NodeExpr) ? VN_AS($3, NodeExpr)
-                                                                         : new AstAttrOf{$1, VAttrType::DIM_BITS, $3};
-                          $$ = new AstStreamL{$2, $4, bitsp}; }
+                        { $$ = new AstStreamL{$2, $4, new AstAttrOf{$1, VAttrType::DIM_BITS_OR_NUMBER, $3}}; }
         |       '{' yP_SRIGHT stream_expressionOrDataType stream_concatenation '}'
-                        { AstNodeExpr* const bitsp = VN_IS($3, NodeExpr) ? VN_AS($3, NodeExpr)
-                                                                          : new AstAttrOf{$1, VAttrType::DIM_BITS, $3};
-                          $$ = new AstStreamR{$2, $4, bitsp}; }
+                        { $$ = new AstStreamR{$2, $4, new AstAttrOf{$1, VAttrType::DIM_BITS_OR_NUMBER, $3}}; }
         ;
 
 stream_concatenation<nodeExprp>:    // ==IEEE: stream_concatenation
@@ -5353,27 +5442,23 @@ stream_expressionOrDataType<nodep>:     // IEEE: from streaming_concatenation
 letId<letp>:  // IEEE: pert of let_declaration
                 idAny/*let_identifieer*/
                         { $<fl>$ = $<fl>1;
-                          $<scp>$ = nullptr;
-                          $$ = new AstLet{$<fl>$, *$1};
-                          SYMP->pushNewUnderNodeOrCurrent($$, $<scp>$); }
+                          $$ = new AstLet{$<fl>$, *$1}; }
         ;
 
 let_declaration<letp>:  // IEEE: let_declaration
                 yLET letId '=' expr ';'
                         { $$ = $2;
-                          $$->addStmtsp(new AstStmtExpr{$1, $4});
-                          SYMP->popScope($2); }
+                          $$->addStmtsp(new AstStmtExpr{$1, $4}); }
         |       yLET letId '(' let_port_listE ')' '=' expr ';'
                         { $$ = $2;
                           $$->addStmtsp(new AstStmtExpr{$1, $7});
-                          $$->addStmtsp($4);
-                          SYMP->popScope($2); }
+                          $$->addStmtsp($4); }
         ;
 
 let_port_listE<nodep>:   // IEEE: [ let_port_list ]
                 /*empty*/                               { $$ = nullptr; }
         |       /*emptyStart*/
-        /*mid*/         { VARRESET_LIST(UNKNOWN); VARIO(INOUT); }
+        /*mid*/         { VARRESET_LIST(VAR); VARIO(INOUT); }
         /*cont*/  let_port_list                         { $$ = $2; VARRESET_NONLIST(UNKNOWN); }
         ;
 
@@ -5385,7 +5470,7 @@ let_port_list<nodep>:   // IEEE: let_port_list
 let_port_item<varp>:  // IEEE: let_port_Item
         //                      // IEEE: Expanded let_formal_type
                 yUNTYPED idAny/*formal_port_identifier*/ variable_dimensionListE exprEqE
-                        { $$ = new AstVar{$<fl>2, VVarType::PORT, *$2, VFlagChildDType{},
+                        { $$ = new AstVar{$<fl>2, VVarType::VAR, *$2, VFlagChildDType{},
                                           new AstBasicDType{$<fl>2, LOGIC_IMPLICIT}};
                           $$->direction(VDirection::INOUT);
                           $$->lifetime(VLifetime::AUTOMATIC);
@@ -5393,7 +5478,7 @@ let_port_item<varp>:  // IEEE: let_port_Item
                           PINNUMINC(); }
         |       data_type idAny/*formal_port_identifier*/ variable_dimensionListE exprEqE
                         { BBUNSUP($<fl>1, "Unsupported: let typed ports");
-                          $$ = new AstVar{$<fl>2, VVarType::PORT, *$2, VFlagChildDType{},
+                          $$ = new AstVar{$<fl>2, VVarType::VAR, *$2, VFlagChildDType{},
                                           new AstBasicDType{$<fl>2, LOGIC_IMPLICIT}};
                           $$->direction(VDirection::INOUT);
                           $$->lifetime(VLifetime::AUTOMATIC);
@@ -5401,7 +5486,7 @@ let_port_item<varp>:  // IEEE: let_port_Item
                           PINNUMINC(); }
         |       implicit_typeE id/*formal_port_identifier*/ variable_dimensionListE exprEqE
                         { if ($1) BBUNSUP($<fl>1, "Unsupported: let typed ports");
-                          $$ = new AstVar{$<fl>2, VVarType::PORT, *$2, VFlagChildDType{},
+                          $$ = new AstVar{$<fl>2, VVarType::VAR, *$2, VFlagChildDType{},
                                           new AstBasicDType{$<fl>2, LOGIC_IMPLICIT}};
                           $$->direction(VDirection::INOUT);
                           $$->lifetime(VLifetime::AUTOMATIC);
@@ -5660,37 +5745,98 @@ combinational_body<nodep>:      // IEEE: combinational_body + sequential_body
                 yTABLE tableEntryList yENDTABLE         { $$ = new AstUdpTable{$1, $2}; }
         ;
 
-tableEntryList<udpTableLinep>:  // IEEE: { combinational_entry | sequential_entry }
-                tableEntry                              { $$ = $1; }
-        |       tableEntryList tableEntry               { $$ = addNextNull($1, $2); }
+tableEntryList<udpTableLinep>:  // IEEE: { combinational_entry + sequential_entry }
+                tableLine                              { $$ = $1; }
+        |       tableEntryList tableLine               { $$ = addNextNull($1, $2); }
         ;
 
-tableEntry<udpTableLinep>:      // IEEE: combinational_entry + sequential_entry
-                yaTABLELINE                             { $$ = new AstUdpTableLine{$<fl>1, *$1}; }
-        |       error                                   { $$ = nullptr; }
+tableLine<udpTableLinep>:
+                tableInputList yaTABLE_LRSEP tablelVal yaTABLE_LINEEND
+                        { $$ = new AstUdpTableLine{AstUdpTableLine::UdpCombo{}, $<fl>1, $1, $3}; }
+        |       tableInputList yaTABLE_LRSEP tablelVal yaTABLE_LRSEP tablelVal yaTABLE_LINEEND
+                        { $$ = new AstUdpTableLine{AstUdpTableLine::UdpSequential{}, $<fl>1, $1, $3, $5}; }
+        ;
+
+tableInputList<udpTableLineValp>:
+                tablelVal                            { $$ = $1; }
+        |       tableInputList tablelVal             { $$ = addNextNull($1, $2); }
+        ;
+
+tablelVal<udpTableLineValp>:
+                yaTABLE_FIELD                          { $$ = new AstUdpTableLineVal{$<fl>1, *$1}; }
+        |       '(' yaTABLE_FIELD yaTABLE_FIELD ')'    { $$ = new AstUdpTableLineVal{$<fl>2, *$2 + *$3}; }
         ;
 
 //************************************************
 // Specify
 
-specify_block<nodep>:           // ==IEEE: specify_block
-                ySPECIFY specifyJunkList yENDSPECIFY    { $$ = nullptr; }
+specify_block<nodep>:               // ==IEEE: specify_block
+                ySPECIFY specify_itemList yENDSPECIFY   { $$ = $2; }
         |       ySPECIFY yENDSPECIFY                    { $$ = nullptr; }
         ;
 
-specifyJunkList:
-                specifyJunk                             { } /* ignored */
-        |       specifyJunkList specifyJunk             { } /* ignored */
+specify_itemList<nodep>:            // IEEE: { specify_item }
+                specify_item                            { $$ = $1; }
+        |       specify_itemList specify_item           { $$ = addNextNull($1, $2); }
         ;
 
-specifyJunk:
-                BISONPRE_NOT(ySPECIFY,yENDSPECIFY)      { }
-        |       ySPECIFY specifyJunk yENDSPECIFY        { }
-        |       error {}
+specify_item<nodep>:                // ==IEEE: specify_item
+                system_timing_check                     { $$ = $1; }
+        |       junkToSemiList ';'                      { $$ = nullptr; }
         ;
 
-specparam_declaration<nodep>:           // ==IEEE: specparam_declaration
+specparam_declaration<nodep>:       // ==IEEE: specparam_declaration
                 ySPECPARAM junkToSemiList ';'           { $$ = nullptr; }
+        ;
+
+system_timing_check<nodep>:         // ==IEEE: system_timing_check
+                setuphold_timing_check                      { $$ = $1; }
+        ;
+
+setuphold_timing_check<nodep>:      // ==IEEE: $setuphold_timing_check
+                yD_SETUPHOLD '(' timing_check_event ',' timing_check_event ',' timing_check_limit ',' timing_check_limit ')' ';' { $$ = nullptr; }
+        |       yD_SETUPHOLD '(' timing_check_event ',' timing_check_event ',' timing_check_limit ',' timing_check_limit ',' idAnyE ')' ';' { $$ = nullptr; }
+        |       yD_SETUPHOLD '(' timing_check_event ',' timing_check_event ',' timing_check_limit ',' timing_check_limit ',' idAnyE ',' minTypMaxE ')' ';' { $$ = nullptr; }
+        |       yD_SETUPHOLD '(' timing_check_event ',' timing_check_event ',' timing_check_limit ',' timing_check_limit ',' idAnyE ',' minTypMaxE ',' minTypMaxE ')' ';' { $$ = nullptr; }
+        |       yD_SETUPHOLD '(' timing_check_event ',' timing_check_event ',' timing_check_limit ',' timing_check_limit ',' idAnyE ',' minTypMaxE ',' minTypMaxE ',' delayed_referenceE ')' ';' { $$ = new AstSetuphold{$1, $3, $5, $17}; }
+        |       yD_SETUPHOLD '(' timing_check_event ',' timing_check_event ',' timing_check_limit ',' timing_check_limit ',' idAnyE ',' minTypMaxE ',' minTypMaxE ',' delayed_referenceE ',' delayed_referenceE ')' ';' { $$ = new AstSetuphold{$1, $3, $5, $17, $19}; }
+        ;
+
+timing_check_event<nodeExprp>:      // ==IEEE: $timing_check_event
+                terminal_identifier                                                         { $$ = $1; }
+        |       yPOSEDGE terminal_identifier                                                { $$ = $2; }
+        |       yNEGEDGE terminal_identifier                                                { $$ = $2; }
+        |       yEDGE terminal_identifier                                                   { $$ = $2; }
+        |       yEDGE '[' edge_descriptor_list ']' terminal_identifier                      { $$ = $5; }
+        |       terminal_identifier yP_ANDANDAND expr                                       { $$ = $1; }
+        |       yPOSEDGE terminal_identifier yP_ANDANDAND expr                              { $$ = $2; }
+        |       yNEGEDGE terminal_identifier yP_ANDANDAND expr                              { $$ = $2; }
+        |       yEDGE terminal_identifier yP_ANDANDAND expr                                 { $$ = $2; }
+        |       yEDGE '[' edge_descriptor_list ']' terminal_identifier yP_ANDANDAND expr    { $$ = $5; }
+        ;
+
+edge_descriptor_list:
+                yaEDGEDESC                            {  }
+        |       edge_descriptor_list ',' yaEDGEDESC   {  }
+        ;
+
+timing_check_limit<nodeExprp>:
+                expr                      { $$ = $1; }
+        |       expr ':' expr ':' expr    { $$ = $3; }
+        ;
+
+delayed_referenceE<nodeExprp>:
+                /*empty*/                               { $$ = nullptr; }
+        |       terminal_identifier                     { $$ = $1; }
+        ;
+
+terminal_identifier<nodeExprp>:
+                idArrayed     { $$ = $1; }
+        ;
+
+idAnyE<strp>:
+                /*empty*/                               { $$ = nullptr; }
+        |       idAny                                   { $$ = $1; }
         ;
 
 junkToSemiList:
@@ -5699,7 +5845,7 @@ junkToSemiList:
         ;
 
 junkToSemi:
-                BISONPRE_NOT(';',yENDSPECIFY,yENDMODULE)        { }
+                BISONPRE_NOT(';',yENDSPECIFY,yENDMODULE,yD_SETUPHOLD)        { }
         |       error {}
         ;
 
@@ -5711,15 +5857,34 @@ id<strp>:
         |       idRandomize                             { $$ = $1; $<fl>$ = $<fl>1; }
         ;
 
-idAny<strp>:                    // Any kind of identifier
+idAny<strp>:  // Any kind of identifier
                 yaID__ETC                               { $$ = $1; $<fl>$ = $<fl>1; }
+        |       yaID__aINST                             { $$ = $1; $<fl>$ = $<fl>1; }
         |       yaID__aTYPE                             { $$ = $1; $<fl>$ = $<fl>1; }
         |       idRandomize                             { $$ = $1; $<fl>$ = $<fl>1; }
+        ;
+
+idAnyAsParseRef<parseRefp>:  // Any kind of identifier as a ParseRef
+                idAny
+                        { $$ = new AstParseRef{$<fl>1, VParseRefExp::PX_TEXT, *$1}; }
+        ;
+
+
+idInst<strp>:                   // IEEE: instance_identifier or similar with another id then '('
+        //                      // See V3ParseImp::tokenPipeScanIdInst
+        //                      //   [^': '@' '.'] yaID/*module_id*/ [ '#' '('...')' ] yaID/*name_of_instance*/ [ '['...']' ] '(' ...
+        //                      //   [^':' @' '.'] yaID/*module_id*/ [ '#' id|etc ] yaID/*name_of_instance*/ [ '['...']' ] '(' ...
+                yaID__aINST                             { $$ = $1; $<fl>$ = $<fl>1; }
         ;
 
 idType<strp>:                   // IEEE: class_identifier or other type identifier
         //                      // Used where reference is needed
                 yaID__aTYPE                             { $$ = $1; $<fl>$ = $<fl>1; }
+        ;
+
+idInstType<strp>:               // type_identifier for functions which have a following id then '('
+                yaID__aINST                             { $$ = $1; $<fl>$ = $<fl>1; }
+        |       yaID__aTYPE                             { $$ = $1; $<fl>$ = $<fl>1; }
         ;
 
 idCC<strp>:                     // IEEE: class/package then ::
@@ -5739,7 +5904,7 @@ idSVKwd<strp>:                  // Warn about non-forward compatible Verilog 200
                         { static string s = "final"; $$ = &s; ERRSVKWD($1, *$$); $<fl>$ = $<fl>1; }
         ;
 
-variable_lvalue<nodeExprp>:         // IEEE: variable_lvalue or net_lvalue
+variable_lvalue<nodeExprp>:     // IEEE: variable_lvalue or net_lvalue
         //                      // Note many variable_lvalue's must use exprOkLvalue when arbitrary expressions may also exist
                 idClassSel                              { $$ = $1; }
         |       '{' variable_lvalueConcList '}'         { $$ = $2; }
@@ -5751,7 +5916,7 @@ variable_lvalue<nodeExprp>:         // IEEE: variable_lvalue or net_lvalue
         |       streaming_concatenation                 { $$ = $1; }
         ;
 
-variable_lvalueConcList<nodeExprp>: // IEEE: part of variable_lvalue: '{' variable_lvalue { ',' variable_lvalue } '}'
+variable_lvalueConcList<nodeExprp>:  // IEEE: part of variable_lvalue: '{' variable_lvalue { ',' variable_lvalue } '}'
                 variable_lvalue                                 { $$ = $1; }
         |       variable_lvalueConcList ',' variable_lvalue     { $$ = new AstConcat{$2, $1, $3}; }
         ;
@@ -5761,8 +5926,7 @@ variable_lvalueConcList<nodeExprp>: // IEEE: part of variable_lvalue: '{' variab
 //UNSUP |       variable_lvalueList ',' variable_lvalue { $$ = addNextNull($1, $3); }
 //UNSUP ;
 
-// VarRef to dotted, and/or arrayed, and/or bit-ranged variable
-idClassSel<nodeExprp>:                      // Misc Ref to dotted, and/or arrayed, and/or bit-ranged variable
+idClass<nodeExprp>:             // Misc Ref to dotted, and/or arrayed, and/or bit-ranged variable
                 idDotted                                { $$ = $1; }
         //                      // IEEE: [ implicit_class_handle . | package_scope ] hierarchical_variable_identifier select
         |       yTHIS '.' idDotted
@@ -5770,8 +5934,20 @@ idClassSel<nodeExprp>:                      // Misc Ref to dotted, and/or arraye
         |       ySUPER '.' idDotted
                         { $$ = new AstDot{$2, false, new AstParseRef{$<fl>1, VParseRefExp::PX_ROOT, "super"}, $3}; }
         |       yTHIS '.' ySUPER '.' idDotted           { $$ = $5; BBUNSUP($1, "Unsupported: this.super"); }
-        //                      // Expanded: package_scope idDotted
+        //                      // Expanded: package_scope idDottedSel
         |       packageClassScope idDotted              { $$ = new AstDot{$<fl>2, true, $1, $2}; }
+        ;
+
+idClassSel<nodeExprp>:          // Misc Ref to dotted, and/or arrayed, and/or bit-ranged variable
+                idDottedSel                             { $$ = $1; }
+        //                      // IEEE: [ implicit_class_handle . | package_scope ] hierarchical_variable_identifier select
+        |       yTHIS '.' idDottedSel
+                        { $$ = new AstDot{$2, false, new AstParseRef{$<fl>1, VParseRefExp::PX_ROOT, "this"}, $3}; }
+        |       ySUPER '.' idDottedSel
+                        { $$ = new AstDot{$2, false, new AstParseRef{$<fl>1, VParseRefExp::PX_ROOT, "super"}, $3}; }
+        |       yTHIS '.' ySUPER '.' idDottedSel        { $$ = $5; BBUNSUP($1, "Unsupported: this.super"); }
+        //                      // Expanded: package_scope idDottedSel
+        |       packageClassScope idDottedSel           { $$ = new AstDot{$<fl>2, true, $1, $2}; }
         ;
 
 idClassSelForeach<nodeExprp>:
@@ -5792,6 +5968,12 @@ idDotted<nodeExprp>:
         |       idDottedMore                            { $$ = $1; }
         ;
 
+idDottedSel<nodeExprp>:
+                yD_ROOT '.' idDottedSelMore
+                        { $$ = new AstDot{$2, false, new AstParseRef{$<fl>1, VParseRefExp::PX_ROOT, "$root"}, $3}; }
+        |       idDottedSelMore                         { $$ = $1; }
+        ;
+
 idDottedForeach<nodeExprp>:
                 yD_ROOT '.' idDottedMoreForeach
                         { $$ = new AstDot{$2, false, new AstParseRef{$<fl>1, VParseRefExp::PX_ROOT, "$root"}, $3}; }
@@ -5799,8 +5981,13 @@ idDottedForeach<nodeExprp>:
         ;
 
 idDottedMore<nodeExprp>:
+                varRefBase                              { $$ = $1; }
+        |       idDottedMore '.' varRefBase             { $$ = new AstDot{$2, false, $1, $3}; }
+        ;
+
+idDottedSelMore<nodeExprp>:
                 idArrayed                               { $$ = $1; }
-        |       idDottedMore '.' idArrayed              { $$ = new AstDot{$2, false, $1, $3}; }
+        |       idDottedSelMore '.' idArrayed           { $$ = new AstDot{$2, false, $1, $3}; }
         ;
 
 idDottedMoreForeach<nodeExprp>:
@@ -5946,8 +6133,8 @@ list_of_clocking_decl_assign<nodep>:  // IEEE: list_of_clocking_decl_assign
         ;
 
 clocking_decl_assign<nodep>:    // IEEE: clocking_decl_assign
-                idAny/*new-signal_identifier*/ exprEqE
-                        { AstParseRef* const refp = new AstParseRef{$<fl>1, VParseRefExp::PX_TEXT, *$1, nullptr, nullptr};
+                idAnyAsParseRef/*new-signal_identifier*/ exprEqE
+                        { AstParseRef* const refp = $1;
                           $$ = refp;
                           if ($2) $$ = new AstAssign{$<fl>2, refp, $2}; }
         ;
@@ -5959,7 +6146,7 @@ clocking_skewE<nodeExprp>:          // IEEE: [clocking_skew]
 
 clocking_skew<nodeExprp>:           // IEEE: clocking_skew
                 delay_control                           { $$ = $1->lhsp()->unlinkFrBack(); $1->deleteTree(); }
-        |      '#' ya1STEP                              { $$ = new AstConst{$<fl>1, AstConst::OneStep{}}; }
+        |      '#' y1STEP                               { $$ = new AstConst{$<fl>1, AstConst::OneStep{}}; }
         |      yPOSEDGE delay_controlE                  { $$ = nullptr;
                                                           BBUNSUP($1, "Unsupported: clocking event edge override"); }
         |      yNEGEDGE delay_controlE                  { $$ = nullptr;
@@ -5970,11 +6157,11 @@ clocking_skew<nodeExprp>:           // IEEE: clocking_skew
 
 cycle_delay<delayp>:  // IEEE: cycle_delay
                yP_POUNDPOUND yaINTNUM
-                       { $$ = new AstDelay{$<fl>1, new AstConst{$<fl>2, *$2}, true}; }
-        |      yP_POUNDPOUND idAny
-                       { $$ = new AstDelay{$<fl>1, new AstParseRef{$<fl>2, VParseRefExp::PX_TEXT, *$2, nullptr, nullptr}, true}; }
+                        { $$ = new AstDelay{$<fl>1, new AstConst{$<fl>2, *$2}, true}; }
+        |      yP_POUNDPOUND idAnyAsParseRef
+                        { $$ = new AstDelay{$<fl>1, $2, true}; }
         |      yP_POUNDPOUND '(' expr ')'
-                       { $$ = new AstDelay{$<fl>1, $3, true}; }
+                        { $$ = new AstDelay{$<fl>1, $3, true}; }
         ;
 
 //************************************************
@@ -6071,13 +6258,13 @@ concurrent_assertion_statement<nodep>:  // ==IEEE: concurrent_assertion_statemen
                         { $$ = new AstCover{$1, $4, $6, VAssertType::CONCURRENT}; }
         //                      // IEEE: cover_sequence_statement
         |       yCOVER ySEQUENCE '(' sexpr ')' stmt
-                        { $$ = nullptr; BBUNSUP($2, "Unsupported: cover sequence"); }
+                        { $$ = nullptr; BBCOVERIGN($2, "Ignoring unsupported: cover sequence"); }
         //                      // IEEE: yCOVER ySEQUENCE '(' clocking_event sexpr ')' stmt
         //                      // sexpr already includes "clocking_event sexpr"
         |       yCOVER ySEQUENCE '(' clocking_event yDISABLE yIFF '(' expr/*expression_or_dist*/ ')' sexpr ')' stmt
-                        { $$ = nullptr; BBUNSUP($2, "Unsupported: cover sequence"); }
+                        { $$ = nullptr; BBCOVERIGN($2, "Ignoring unsupported: cover sequence"); }
         |       yCOVER ySEQUENCE '(' yDISABLE yIFF '(' expr/*expression_or_dist*/ ')' sexpr ')' stmt
-                        { $$ = nullptr; BBUNSUP($2, "Unsupported: cover sequence"); }
+                        { $$ = nullptr; BBCOVERIGN($2, "Ignoring unsupported: cover sequence"); }
         //                      // IEEE: restrict_property_statement
         |       yRESTRICT yPROPERTY '(' property_spec ')' ';'
                         { $$ = new AstRestrict{$1, $4}; }
@@ -6089,7 +6276,6 @@ property_declaration<nodeFTaskp>:  // ==IEEE: property_declaration
                         { $$ = $1;
                           $$->addStmtsp($2);
                           $$->addStmtsp($4);
-                          SYMP->popScope($$);
                           GRAMMARP->endLabel($<fl>6, $$, $6);
                           GRAMMARP->m_insideProperty = false;
                           GRAMMARP->m_typedPropertyPort = false; }
@@ -6098,14 +6284,13 @@ property_declaration<nodeFTaskp>:  // ==IEEE: property_declaration
 property_declarationFront<nodeFTaskp>:  // IEEE: part of property_declaration
                 yPROPERTY idAny/*property_identifier*/
                         { $$ = new AstProperty{$<fl>2, *$2, nullptr};
-                          GRAMMARP->m_insideProperty = true;
-                          SYMP->pushNewUnderNodeOrCurrent($$, nullptr); }
+                          GRAMMARP->m_insideProperty = true; }
         ;
 
 property_port_listE<nodep>:  // IEEE: [ ( [ property_port_list ] ) ]
-                /* empty */                       { $$ = nullptr; }
-        |       '(' ')'                           { $$ = nullptr; }
-        |       '(' property_port_list ')'        { $$ = $2; }
+                /* empty */                             { $$ = nullptr; }
+        |       '(' ')'                                 { $$ = nullptr; }
+        |       '(' property_port_list ')'              { $$ = $2; }
         ;
 
 property_port_list<nodep>:  // ==IEEE: property_port_list
@@ -6120,22 +6305,26 @@ property_port_item<nodep>:  // IEEE: property_port_item/sequence_port_item
         //                      //           id {variable_dimension} [ '=' property_actual_arg ]
         //                      // seq IEEE: [ yLOCAL [ sequence_lvar_port_direction ] ] sequence_formal_type
         //                      //           id {variable_dimension} [ '=' sequence_actual_arg ]
-                property_port_itemFront property_port_itemAssignment { $$ = $2; }
+                property_port_itemFront property_port_itemAssignment  { $$ = $2; }
         ;
 
-property_port_itemFront: // IEEE: part of property_port_item/sequence_port_item
-                property_port_itemDirE property_formal_typeNoDt  { VARDTYPE($2); }
+property_port_itemFront:  // IEEE: part of property_port_item/sequence_port_item
+                property_port_itemDirE property_formal_typeNoDt
+                        { VARDTYPE($2); }
         //                      // data_type_or_implicit
         |       property_port_itemDirE data_type
                         { VARDTYPE($2); GRAMMARP->m_typedPropertyPort = true; }
         |       property_port_itemDirE yVAR data_type
                         { VARDTYPE($3); GRAMMARP->m_typedPropertyPort = true; }
-        |       property_port_itemDirE yVAR implicit_typeE      { VARDTYPE($3); }
-        |       property_port_itemDirE implicit_typeE           { VARDTYPE($2); }
+        |       property_port_itemDirE yVAR implicit_typeE
+                        { VARDTYPE($3); }
+        |       property_port_itemDirE implicit_typeE
+                        { VARDTYPE($2); }
         ;
 
-property_port_itemAssignment<nodep>:  // IEEE: part of property_port_item/sequence_port_item/checker_port_direction
-                id variable_dimensionListE         { $$ = VARDONEA($<fl>1, *$1, $2, nullptr); }
+property_port_itemAssignment<nodep>:  // IEEE: part of property_port_item/sequence_port_item
+                id variable_dimensionListE
+                        { $$ = VARDONEA($<fl>1, *$1, $2, nullptr); }
         |       id variable_dimensionListE '=' property_actual_arg
                         { $$ = VARDONEA($<fl>1, *$1, $2, $4);
                           BBUNSUP($3, "Unsupported: property variable default value"); }
@@ -6153,14 +6342,15 @@ property_port_itemDirE:
         ;
 
 property_declarationBody<nodep>:  // IEEE: part of property_declaration
-        //UNSUP assertion_variable_declarationList property_statement_spec  {}
+                assertion_variable_declarationList
+                        { $$ = nullptr; BBUNSUP($1->fileline(), "Unsupported: property variable declaration"); }
         //                      // IEEE-2012: Incorrectly has yCOVER ySEQUENCE then property_spec here.
         //                      // Fixed in IEEE 1800-2017
-                property_spec                 { $$ = $1; }
-        |       property_spec ';'             { $$ = $1; }
+        |       property_spec                           { $$ = $1; }
+        |       property_spec ';'                       { $$ = $1; }
         ;
 
-assertion_variable_declarationList<nodep>: // IEEE: part of assertion_variable_declaration
+assertion_variable_declarationList<nodep>:  // IEEE: part of assertion_variable_declaration
                 assertion_variable_declaration          { $$ = $1; }
         |       assertion_variable_declarationList assertion_variable_declaration
                         { $$ = addNextNull($1, $2); }
@@ -6172,15 +6362,13 @@ sequence_declaration<nodeFTaskp>:  // ==IEEE: sequence_declaration
                         { $$ = $1;
                           $$->addStmtsp($2);
                           $$->addStmtsp($4);
-                          SYMP->popScope($$);
                           GRAMMARP->endLabel($<fl>6, $$, $6); }
         ;
 
 sequence_declarationFront<nodeFTaskp>:  // IEEE: part of sequence_declaration
                 ySEQUENCE idAny/*new_sequence*/
                         { BBUNSUP($1, "Unsupported: sequence");
-                          $$ = new AstProperty{$<fl>2, *$2, nullptr};
-                          SYMP->pushNewUnderNodeOrCurrent($$, nullptr); }
+                          $$ = new AstProperty{$<fl>2, *$2, nullptr}; }
         ;
 
 sequence_port_listE<nodep>:  // IEEE: [ ( [ sequence_port_list ] ) ]
@@ -6226,8 +6414,8 @@ property_spec<propSpecp>:               // IEEE: property_spec
                 '@' '(' senitemEdge ')' yDISABLE yIFF '(' expr ')' pexpr
                         { $$ = new AstPropSpec{$1, $3, $8, $10}; }
         |       '@' '(' senitemEdge ')' pexpr           { $$ = new AstPropSpec{$1, $3, nullptr, $5}; }
-        //                              // Disable applied after the event occurs,
-        //                              // so no existing AST can represent this
+        //                      // Disable applied after the event occurs,
+        //                      // so no existing AST can represent this
         |       yDISABLE yIFF '(' expr ')' '@' '(' senitemEdge ')' pexpr
                         { $$ = new AstPropSpec{$1, $8, nullptr, new AstLogOr{$1, $4, $10}};
                           BBUNSUP($<fl>1, "Unsupported: property '(disable iff (...) @ (...)'\n"
@@ -6526,9 +6714,6 @@ boolean_abbrev<nodeExprp>:  // ==IEEE: boolean_abbrev
         ;
 
 //************************************************
-// Let
-
-//************************************************
 // Covergroup
 
 covergroup_declaration<nodep>:  // ==IEEE: covergroup_declaration
@@ -6536,28 +6721,24 @@ covergroup_declaration<nodep>:  // ==IEEE: covergroup_declaration
         /*cont*/    coverage_spec_or_optionListE
         /*cont*/    yENDGROUP endLabelE
                         { $$ = $1;
-                          SYMP->popScope($$);
                           GRAMMARP->endLabel($<fl>6, $1, $6); }
         |       covergroup_declarationFront '(' tf_port_listE ')'
         /*cont*/    coverage_eventE ';' coverage_spec_or_optionListE
         /*cont*/    yENDGROUP endLabelE
                         { $$ = $1;
-                          SYMP->popScope($$);
                           GRAMMARP->endLabel($<fl>9, $1, $9); }
         //                      // IEEE 1800-2023 added:
         |       covergroup_declarationFront yEXTENDS idAny/*covergroup_identifier*/
         /*cont*/    ';' coverage_spec_or_optionListE
         /*cont*/    yENDGROUP endLabelE
                         { $$ = $1;
-                          SYMP->popScope($$);
                           GRAMMARP->endLabel($<fl>7, $1, $7); }
         ;
 
-covergroup_declarationFront<constraintp>:  // IEEE: part of covergroup_declaration
+covergroup_declarationFront<classp>:  // IEEE: part of covergroup_declaration
                 yCOVERGROUP idAny
-                        { $$ = new AstConstraint{$<fl>2, *$2, nullptr};
-                          BBUNSUP($<fl>1, "Unsupported: covergroup");
-                          SYMP->pushNew($<constraintp>$); }
+                        { $$ = new AstClass{$<fl>2, *$2};
+                          BBCOVERIGN($<fl>1, "Ignoring unsupported: covergroup"); }
         ;
 
 cgexpr<nodeExprp>:  // IEEE-2012: covergroup_expression, before that just expression
@@ -6586,27 +6767,27 @@ coverage_option<nodep>:  // ==IEEE: coverage_option
         //                      // option/type_option aren't really keywords
                 id/*yOPTION | yTYPE_OPTION*/ '.' idAny/*member_identifier*/ '=' expr
                         { // TODO: check that 'id' is 'option' or 'type_option'
-                          $$ = nullptr; BBUNSUP($<fl>1, "Unsupported: coverage option"); }
+                          $$ = nullptr; BBCOVERIGN($<fl>1, "Ignoring unsupported: coverage option"); }
         ;
 
 cover_point<nodep>:  // ==IEEE: cover_point
         //              // [ [ data_type_or_implicit ] cover_point_identifier ':' ] yCOVERPOINT
                 yCOVERPOINT expr iffE bins_or_empty
-                        { $$ = nullptr; BBUNSUP($<fl>1, "Unsupported: cover point"); }
+                        { $$ = nullptr; BBCOVERIGN($<fl>1, "Ignoring unsupported: coverpoint"); }
         //                      // IEEE-2012: class_scope before an ID
         |       id/*cover_point_id*/ ':' yCOVERPOINT expr iffE bins_or_empty
-                        { $$ = nullptr; BBUNSUP($<fl>3, "Unsupported: cover point"); }
+                        { $$ = nullptr; BBCOVERIGN($<fl>3, "Ignoring unsupported: coverpoint"); }
         //                      // data_type_or_implicit expansion
         |       data_type id/*cover_point_id*/ ':' yCOVERPOINT expr iffE bins_or_empty
-                        { $$ = nullptr; BBUNSUP($<fl>4, "Unsupported: cover point"); }
+                        { $$ = nullptr; BBCOVERIGN($<fl>4, "Ignoring unsupported: coverpoint"); }
         |       yVAR data_type id/*cover_point_id*/ ':' yCOVERPOINT expr iffE bins_or_empty
-                        { $$ = nullptr; BBUNSUP($<fl>5, "Unsupported: cover point"); }
+                        { $$ = nullptr; BBCOVERIGN($<fl>5, "Ignoring unsupported: coverpoint"); }
         |       yVAR implicit_typeE id/*cover_point_id*/ ':' yCOVERPOINT expr iffE bins_or_empty
-                        { $$ = nullptr; BBUNSUP($<fl>5, "Unsupported: cover point"); }
+                        { $$ = nullptr; BBCOVERIGN($<fl>5, "Ignoring unsupported: coverpoint"); }
         |       signingE rangeList id/*cover_point_id*/ ':' yCOVERPOINT expr iffE bins_or_empty
-                        { $$ = nullptr; BBUNSUP($<fl>5, "Unsupported: cover point"); }
+                        { $$ = nullptr; BBCOVERIGN($<fl>5, "Ignoring unsupported: coverpoint"); }
         |       signing id/*cover_point_id*/ ':' yCOVERPOINT expr iffE bins_or_empty
-                        { $$ = nullptr; BBUNSUP($<fl>4, "Unsupported: cover point"); }
+                        { $$ = nullptr; BBCOVERIGN($<fl>4, "Ignoring unsupported: coverpoint"); }
         //                      // IEEE-2012:
         |       bins_or_empty                           { $$ = $1; }
         ;
@@ -6614,18 +6795,24 @@ cover_point<nodep>:  // ==IEEE: cover_point
 iffE<nodep>:  // IEEE: part of cover_point, others
                 /* empty */                             { $$ = nullptr; }
         |       yIFF '(' expr ')'
-                        { $$ = nullptr; BBUNSUP($<fl>1, "Unsupported: cover 'iff'"); }
+                        { $$ = nullptr; BBCOVERIGN($<fl>1, "Ignoring unsupported: cover 'iff'"); }
         ;
 
 bins_or_empty<nodep>:  // ==IEEE: bins_or_empty
                 '{' bins_or_optionsList '}'             { $$ = $2; }
         |       '{' '}'                                 { $$ = nullptr; }
         |       ';'                                     { $$ = nullptr; }
+        //
+        |       '{' bins_or_optionsList error '}'       { $$ = $2; }
+        |       '{' error '}'                           { $$ = nullptr; }
         ;
 
 bins_or_optionsList<nodep>:  // IEEE: { bins_or_options ';' }
                 bins_or_options ';'                     { $$ = $1; }
         |       bins_or_optionsList bins_or_options ';' { $$ = addNextNull($1, $2); }
+        //
+        |       bins_or_optionsList error ';'           { $$ = $1; }
+        |       error ';'                               { $$ = nullptr; }
         ;
 
 bins_or_options<nodep>:  // ==IEEE: bins_or_options
@@ -6633,24 +6820,24 @@ bins_or_options<nodep>:  // ==IEEE: bins_or_options
                 coverage_option                         { $$ = $1; }
         //                      // Can't use wildcardE as results in conflicts
         |       bins_keyword idAny/*bin_identifier*/ bins_orBraE '=' '{' range_list '}' iffE
-                        { $$ = nullptr; BBUNSUP($<fl>4, "Unsupported: cover bin specification"); }
+                        { $$ = nullptr; BBCOVERIGN($<fl>4, "Ignoring unsupported: cover bin specification"); }
         |       bins_keyword idAny/*bin_identifier*/ bins_orBraE '=' '{' range_list '}' yWITH__CUR '{' cgexpr '}' iffE
-                        { $$ = nullptr; BBUNSUP($<fl>8, "Unsupported: cover bin 'with' specification"); }
+                        { $$ = nullptr; BBCOVERIGN($<fl>8, "Ignoring unsupported: cover bin 'with' specification"); }
         |       yWILDCARD bins_keyword idAny/*bin_identifier*/ bins_orBraE '=' '{' range_list '}' iffE
-                        { $$ = nullptr; BBUNSUP($<fl>5, "Unsupported: cover bin 'wildcard' specification"); }
+                        { $$ = nullptr; BBCOVERIGN($<fl>5, "Ignoring unsupported: cover bin 'wildcard' specification"); }
         |       yWILDCARD bins_keyword idAny/*bin_identifier*/ bins_orBraE '=' '{' range_list '}' yWITH__CUR '{' cgexpr '}' iffE
-                        { $$ = nullptr; BBUNSUP($<fl>9, "Unsupported: cover bin 'wildcard' 'with' specification"); }
+                        { $$ = nullptr; BBCOVERIGN($<fl>9, "Ignoring unsupported: cover bin 'wildcard' 'with' specification"); }
         //
         //                      // cgexpr part of trans_list
         |       bins_keyword idAny/*bin_identifier*/ bins_orBraE '=' trans_list iffE
-                        { $$ = nullptr; BBUNSUP($<fl>4, "Unsupported: cover bin trans list"); }
+                        { $$ = nullptr; BBCOVERIGN($<fl>4, "Ignoring unsupported: cover bin trans list"); }
         |       yWILDCARD bins_keyword idAny/*bin_identifier*/ bins_orBraE '=' trans_list iffE
-                        { $$ = nullptr; BBUNSUP($<fl>1, "Unsupported: cover bin 'wildcard' trans list"); }
+                        { $$ = nullptr; BBCOVERIGN($<fl>1, "Ignoring unsupported: cover bin 'wildcard' trans list"); }
         //
         |       bins_keyword idAny/*bin_identifier*/ bins_orBraE '=' yDEFAULT iffE
-                        { $$ = nullptr; BBUNSUP($<fl>5, "Unsupported: cover bin 'default'"); }
+                        { $$ = nullptr; BBCOVERIGN($<fl>5, "Ignoring unsupported: cover bin 'default'"); }
         |       bins_keyword idAny/*bin_identifier*/ bins_orBraE '=' yDEFAULT ySEQUENCE iffE
-                        { $$ = nullptr; BBUNSUP($<fl>6, "Unsupported: cover bin 'default' 'sequence'"); }
+                        { $$ = nullptr; BBCOVERIGN($<fl>6, "Ignoring unsupported: cover bin 'default' 'sequence'"); }
         ;
 
 bins_orBraE<nodep>:  // IEEE: part of bins_or_options:
@@ -6674,23 +6861,23 @@ trans_set<nodep>:  // ==IEEE: trans_set
                 trans_range_list                        { $$ = $1; }
         //                      // Note the { => } in the grammar, this is really a list
         |       trans_set yP_EQGT trans_range_list
-                        { $$ = $1; BBUNSUP($<fl>2, "Unsupported: cover trans set '=>'"); }
+                        { $$ = $1; BBCOVERIGN($<fl>2, "Ignoring unsupported: cover trans set '=>'"); }
         ;
 
 trans_range_list<nodep>:  // ==IEEE: trans_range_list
                 trans_item                              { $$ = $1; }
         |       trans_item yP_BRASTAR cgexpr ']'
-                        { $$ = nullptr; BBUNSUP($<fl>2, "Unsupported: cover '[*'"); }
+                        { $$ = nullptr; BBCOVERIGN($<fl>2, "Ignoring unsupported: cover '[*'"); }
         |       trans_item yP_BRASTAR cgexpr ':' cgexpr ']'
-                        { $$ = nullptr; BBUNSUP($<fl>2, "Unsupported: cover '[*'"); }
+                        { $$ = nullptr; BBCOVERIGN($<fl>2, "Ignoring unsupported: cover '[*'"); }
         |       trans_item yP_BRAMINUSGT cgexpr ']'
-                        { $$ = nullptr; BBUNSUP($<fl>2, "Unsupported: cover '[->'"); }
+                        { $$ = nullptr; BBCOVERIGN($<fl>2, "Ignoring unsupported: cover '[->'"); }
         |       trans_item yP_BRAMINUSGT cgexpr ':' cgexpr ']'
-                        { $$ = nullptr; BBUNSUP($<fl>2, "Unsupported: cover '[->'"); }
+                        { $$ = nullptr; BBCOVERIGN($<fl>2, "Ignoring unsupported: cover '[->'"); }
         |       trans_item yP_BRAEQ cgexpr ']'
-                        { $$ = nullptr; BBUNSUP($<fl>2, "Unsupported: cover '[='"); }
+                        { $$ = nullptr; BBCOVERIGN($<fl>2, "Ignoring unsupported: cover '[='"); }
         |       trans_item yP_BRAEQ cgexpr ':' cgexpr ']'
-                        { $$ = nullptr; BBUNSUP($<fl>2, "Unsupported: cover '[='"); }
+                        { $$ = nullptr; BBCOVERIGN($<fl>2, "Ignoring unsupported: cover '[='"); }
         ;
 
 trans_item<nodep>:  // ==IEEE: range_list
@@ -6705,9 +6892,9 @@ covergroup_range_list<nodep>:  // ==IEEE: covergroup_range_list
 
 cover_cross<nodep>:  // ==IEEE: cover_cross
                 id/*cover_point_identifier*/ ':' yCROSS list_of_cross_items iffE cross_body
-                        { $$ = nullptr; BBUNSUP($<fl>3, "Unsupported: cross"); }
+                        { $$ = nullptr; BBCOVERIGN($<fl>3, "Ignoring unsupported: cover cross"); }
         |       yCROSS list_of_cross_items iffE cross_body
-                        { $$ = nullptr; BBUNSUP($<fl>1, "Unsupported: cross"); }
+                        { $$ = nullptr; BBCOVERIGN($<fl>1, "Ignoring unsupported: cover cross"); }
         ;
 
 list_of_cross_items<nodep>:  // ==IEEE: list_of_cross_items
@@ -6728,42 +6915,43 @@ cross_item<nodep>:  // ==IEEE: cross_item
 cross_body<nodep>:  // ==IEEE: cross_body
                 '{' '}'                                 { $$ = nullptr; }
         //                      // IEEE-2012: No semicolon here, mistake in spec
-        |       '{' cross_body_itemSemiList '}'         { $$ = $2; }
+        |       '{' cross_body_itemList '}'             { $$ = $2; }
         |       ';'                                     { $$ = nullptr; }
+        //
+        |       '{' cross_body_itemList error '}'       { $$ = $2; }
+        |       '{' error '}'                           { $$ = nullptr; }
         ;
 
-cross_body_itemSemiList<nodep>:  // IEEE: part of cross_body
-                cross_body_item ';'                     { $$ = $1; }
-        |       cross_body_itemSemiList cross_body_item ';'  { $$ = addNextNull($1, $2); }
-        |       error ';'                               { $$ = nullptr; }
-        |       cross_body_itemSemiList error ';'       { $$ = $1; }
+cross_body_itemList<nodep>:  // IEEE: part of cross_body
+                cross_body_item                         { $$ = $1; }
+        |       cross_body_itemList cross_body_item     { $$ = addNextNull($1, $2); }
         ;
 
 cross_body_item<nodep>:  // ==IEEE: cross_body_item
-        //                      // IEEE: our semicolon is in the list
+                function_declaration
+                        { $$ = $1; BBCOVERIGN($1->fileline(), "Ignoring unsupported: coverage cross 'function' declaration"); }
         //                      // IEEE: bins_selection_or_option
-                coverage_option                         { $$ = $1; }
+        |       coverage_option ';'                     { $$ = $1; }
         //                      // IEEE: bins_selection
-        |       function_declaration
-                        { $$ = $1; BBUNSUP($1->fileline(), "Unsupported: coverage cross 'function' declaration"); }
-        |       bins_keyword idAny/*new-bin_identifier*/ '=' select_expression iffE
-                        { $$ = nullptr; BBUNSUP($1, "Unsupported: coverage cross bin"); }
+        |       bins_keyword idAny/*new-bin_identifier*/ '=' select_expression iffE ';'
+                        { $$ = nullptr; BBCOVERIGN($1, "Ignoring unsupported: coverage cross bin"); }
+        |       error ';'                               { $$ = nullptr; }
         ;
 
 select_expression<nodep>:  // ==IEEE: select_expression
         //                      // IEEE: select_condition expanded here
                 yBINSOF '(' bins_expression ')'
-                        { $$ = nullptr; BBUNSUP($1, "Unsupported: coverage select expression 'binsof'"); }
+                        { $$ = nullptr; BBCOVERIGN($1, "Ignoring unsupported: coverage select expression 'binsof'"); }
         |       '!' yBINSOF '(' bins_expression ')'
-                        { $$ = nullptr; BBUNSUP($1, "Unsupported: coverage select expression 'binsof'"); }
+                        { $$ = nullptr; BBCOVERIGN($1, "Ignoring unsupported: coverage select expression 'binsof'"); }
         |       yBINSOF '(' bins_expression ')' yINTERSECT '{' covergroup_range_list '}'
-                        { $$ = nullptr; BBUNSUP($5, "Unsupported: coverage select expression 'intersect'"); }
+                        { $$ = nullptr; BBCOVERIGN($5, "Ignoring unsupported: coverage select expression 'intersect'"); }
         |       '!' yBINSOF '(' bins_expression ')' yINTERSECT '{' covergroup_range_list '}'    { }
-                        { $$ = nullptr; BBUNSUP($5, "Unsupported: coverage select expression 'intersect'"); }
+                        { $$ = nullptr; BBCOVERIGN($5, "Ignoring unsupported: coverage select expression 'intersect'"); }
         |       yWITH__PAREN '(' cgexpr ')'
-                        { $$ = nullptr; BBUNSUP($1, "Unsupported: coverage select expression with"); }
+                        { $$ = nullptr; BBCOVERIGN($1, "Ignoring unsupported: coverage select expression with"); }
         |       '!' yWITH__PAREN '(' cgexpr ')'
-                        { $$ = nullptr; BBUNSUP($1, "Unsupported: coverage select expression with"); }
+                        { $$ = nullptr; BBCOVERIGN($1, "Ignoring unsupported: coverage select expression with"); }
         //                      // IEEE-2012: Need clarification as to precedence
         //UNSUP yWITH__PAREN '(' cgexpr ')' yMATCHES cgexpr    { }
         //                      // IEEE-2012: Need clarification as to precedence
@@ -6771,16 +6959,22 @@ select_expression<nodep>:  // ==IEEE: select_expression
         //
         |       '(' select_expression ')'                       { $$ = $2; }
         |       select_expression yP_ANDAND select_expression
-                        { $$ = nullptr; BBUNSUP($2, "Unsupported: coverage select expression '&&'"); }
+                        { $$ = nullptr; BBCOVERIGN($2, "Ignoring unsupported: coverage select expression '&&'"); }
         |       select_expression yP_OROR   select_expression
-                        { $$ = nullptr; BBUNSUP($2, "Unsupported: coverage select expression '||'"); }
+                        { $$ = nullptr; BBCOVERIGN($2, "Ignoring unsupported: coverage select expression '||'"); }
         //                      // IEEE-2012: cross_identifier
         //                      // Part of covergroup_expression - generic identifier
         //                      // IEEE-2012: Need clarification as to precedence
-        //UNSUP  cgexpr  { $$ = nullptr; BBUNSUP($1, "Unsupported: coverage select expression"); }
+        //UNSUP  cgexpr  { $$ = nullptr; BBCOVERIGN($1, "Ignoring unsupported: coverage select expression"); }
         //
+        //                      // IEEE: cross_set_expression [ yMATCHES integer_covergroup_expression ]
+        //                      // covergroup_expression [ yMATCHES ( integer_covergroup_expression | '$' ) ]
         //                      // Need precedence fix
         //UNSUP  cgexpr yMATCHES cgexpr    {..}
+        //UNSUP                 // Below are all removed
+        |       idAny '(' list_of_argumentsE ')'
+                        { $$ = nullptr; BBCOVERIGN($<fl>1, "Ignoring unsupported: coverage select function call"); }
+        //UNSUP                 // Above are all removed, replace with:
         ;
 
 bins_expression<nodep>:  // ==IEEE: bins_expression
@@ -6794,11 +6988,11 @@ bins_expression<nodep>:  // ==IEEE: bins_expression
 coverage_eventE<nodep>:  // IEEE: [ coverage_event ]
                 /* empty */                             { $$ = nullptr; }
         |       clocking_event
-                        { $$ = nullptr; BBUNSUP($<fl>1, "Unsupported: coverage clocking event"); }
+                        { $$ = nullptr; BBCOVERIGN($<fl>1, "Ignoring unsupported: coverage clocking event"); }
         |       yWITH__ETC yFUNCTION idAny/*"sample"*/ '(' tf_port_listE ')'
-                        { $$ = nullptr; BBUNSUP($<fl>1, "Unsupported: coverage 'with' 'function'"); }
+                        { $$ = nullptr; BBCOVERIGN($<fl>1, "Ignoring unsupported: coverage 'with' 'function'"); }
         |       yP_ATAT '(' block_event_expression ')'
-                        { $$ = nullptr; BBUNSUP($<fl>1, "Unsupported: coverage '@@' events"); }
+                        { $$ = nullptr; BBCOVERIGN($<fl>1, "Ignoring unsupported: coverage '@@' events"); }
         ;
 
 block_event_expression<nodep>:  // ==IEEE: block_event_expression
@@ -6835,7 +7029,6 @@ rs_productionList<nodep>:  // IEEE: rs_production+
 rs_production<nodep>:  // ==IEEE: rs_production
                 rs_productionFront ':' rs_ruleList ';'
                         { // TODO makes a function, probably want a new Ast type instead
-                          SYMP->popScope($$);
                           $$ = nullptr; BBUNSUP($<fl>2, "Unsupported: randsequence production"); }
         ;
 
@@ -6892,7 +7085,7 @@ rs_prodList<nodep>:  // IEEE: rs_prod+
         ;
 
 rs_prod<nodep>:  // ==IEEE: rs_prod
-                rs_production_item                       { $$ = $1; }
+                rs_production_item                      { $$ = $1; }
         |       rs_code_block                           { $$ = $1; }
         //                      // IEEE: rs_if_else
         |       yIF '(' expr ')' rs_production_item %prec prLOWER_THAN_ELSE
@@ -6936,32 +7129,71 @@ rs_case_item<nodep>:  // ==IEEE: rs_case_item
 //**********************************************************************
 // Checker
 
-checker_declaration<nodep>:  // ==IEEE: part of checker_declaration
+checker_declaration<nodeModulep>:  // ==IEEE: part of checker_declaration
                 checkerFront checker_port_listE ';'
                         checker_or_generate_itemListE yENDCHECKER endLabelE
                         { $$ = $1;
                           $1->modTrace(GRAMMARP->allTracingOn($1->fileline()));
                           if ($2) $1->addStmtsp($2);
                           if ($4) $1->addStmtsp($4);
-                          SYMP->popScope($1);
                           GRAMMARP->endLabel($<fl>6, $1, $6); }
         ;
 
 checkerFront<nodeModulep>:  // IEEE: part of checker_declaration
                 yCHECKER idAny/*checker_identifier*/
-                        { BBUNSUP($<fl>1, "Unsupported: checker");
-                          // TODO should be AstChecker not AstModule
-                          $$ = new AstModule{$<fl>2, *$2};
+                        { $$ = new AstModule{$<fl>2, *$2, AstModule::Checker{}};
                           $$->modTrace(GRAMMARP->allTracingOn($$->fileline()));
                           $$->timeunit(PARSEP->timeLastUnit());
-                          $$->unconnectedDrive(PARSEP->unconnectedDrive());
-                          SYMP->pushNew($$); }
+                          $$->unconnectedDrive(PARSEP->unconnectedDrive()); }
+        |       checkerFront sigAttrScope               { $$ = $1; }
         ;
 
 checker_port_listE<nodep>:  // IEEE: [ ( [ checker_port_list ] ) ]
-        //                      // checker_port_item is basically the same as property_port_item, minus yLOCAL::
-        //                      // Want to bet 1800-2012 adds local to checkers?
-                property_port_listE                     { $$ = $1; }
+                /* empty */                             { $$ = nullptr; }
+        |       '(' ')'                                 { $$ = nullptr; }
+        |       '('
+        /*mid*/         { VARRESET_LIST(PORT); GRAMMARP->m_pinAnsi = true; }
+        /*cont*/    checker_port_list ')'
+                        { $$ = $3; }
+        ;
+
+checker_port_list<nodep>:  // ==IEEE: checker_port_list
+                checker_port_item                             { $$ = $1; }
+        |       checker_port_list ',' checker_port_item       { $$ = addNextNull($1, $3); }
+        ;
+
+checker_port_item<nodep>:  // IEEE: checker_port_item
+                checker_port_itemFront checker_port_itemAssignment  { $$ = $2; }
+        ;
+
+checker_port_itemFront:  // IEEE: part of checker_port_item
+                checker_port_directionE property_formal_typeNoDt
+                        { VARDTYPE($2); }
+        //                      // data_type_or_implicit
+        |       checker_port_directionE data_type
+                        { VARDTYPE($2); GRAMMARP->m_typedPropertyPort = true; }
+        |       checker_port_directionE yVAR data_type
+                        { VARDTYPE($3); GRAMMARP->m_typedPropertyPort = true; }
+        |       checker_port_directionE yVAR implicit_typeE
+                        { VARDTYPE($3); }
+        |       checker_port_directionE implicit_typeE
+                        { VARDTYPE($2); }
+        ;
+
+checker_port_directionE:  // IEEE: [ checker_port_direction ]
+                /* empty */                             { VARIO(INPUT); }
+        |       yINPUT                                  { VARIO(INPUT); }
+        |       yOUTPUT                                 { VARIO(OUTPUT); }
+        ;
+
+checker_port_itemAssignment<nodep>:  // IEEE: part of checker_port_direction
+                id variable_dimensionListE
+                        { $$ = new AstPort{CRELINE(), PINNUMINC(), *$1};
+                          $$->addNext(VARDONEA($<fl>1, *$1, $2, nullptr)); }
+        |       id variable_dimensionListE '=' property_actual_arg
+                        { $$ = new AstPort{CRELINE(), PINNUMINC(), *$1};
+                          $$->addNext(VARDONEA($<fl>1, *$1, $2, $4));
+                          BBUNSUP($3, "Unsupported: checker port variable default value"); }
         ;
 
 checker_or_generate_itemListE<nodep>:  // IEEE: [{ checker_or_generate_itemList }]
@@ -6986,22 +7218,19 @@ checker_or_generate_item<nodep>:  // ==IEEE: checker_or_generate_item
         ;
 
 checker_or_generate_item_declaration<nodep>:  // ==IEEE: checker_or_generate_item_declaration
-                data_declaration
-                        { $$ = $1; BBUNSUP($1, "Unsupported: checker data declaration"); }
+                data_declaration                        { $$ = $1; }
         |       yRAND data_declaration
                         { $$ = $2; BBUNSUP($1, "Unsupported: checker rand"); }
         |       function_declaration                    { $$ = $1; }
         |       checker_declaration
-                        { $$ = nullptr; BBUNSUP($1, "Unsupported: recursive checker"); }
+                        { $$ = nullptr; BBUNSUP($1, "Unsupported: recursive 'checker'"); }
         |       assertion_item_declaration              { $$ = $1; }
         |       covergroup_declaration                  { $$ = $1; }
         //      // IEEE deprecated: overload_declaration
         |       genvar_declaration                      { $$ = $1; }
         |       clocking_declaration                    { $$ = $1; }
-        |       yDEFAULT yCLOCKING idAny/*clocking_identifier*/ ';'        { }
-                        { $$ = nullptr; BBUNSUP($1, "Unsupported: checker default clocking"); }
-        |       yDEFAULT yDISABLE yIFF expr/*expression_or_dist*/ ';'   { }
-                        { $$ = nullptr; BBUNSUP($1, "Unsupported: checker default disable iff"); }
+        |       modDefaultClocking                      { $$ = $1; }
+        |       defaultDisable                          { $$ = $1; }
         |       ';'                                     { $$ = nullptr; }
         ;
 
@@ -7017,8 +7246,8 @@ checker_generate_item<nodep>:  // ==IEEE: checker_generate_item
 //UNSUPchecker_instantiation<nodep>:
 //UNSUP //                      // Only used for procedural_assertion_item's
 //UNSUP //                      // Version in concurrent_assertion_item looks like etcInst
-//UNSUP //                      // Thus instead of *_checker_port_connection we can use etcInst's cellpinListE
-//UNSUP         id/*checker_identifier*/ id '(' cellpinListE ')' ';'     { }
+//UNSUP //                      // Thus instead of *_checker_port_connection we can use etcInst's instPinListE
+//UNSUP         id/*checker_identifier*/ id '(' instPinListE ')' ';'     { }
 //UNSUP ;
 
 //**********************************************************************
@@ -7030,15 +7259,13 @@ class_declaration<nodep>:       // ==IEEE: part of class_declaration
         //                      // new class scope correct via classFront
                 classFront parameter_port_listE classExtendsE classImplementsE ';'
         /*mid*/         { // Allow resolving types declared in base extends class
-                          if ($<scp>3) SYMP->importExtends($<scp>3);
+                          $1->hasParameterList($<flag>2);
                         }
         /*cont*/    class_itemListEnd endLabelE
                         { $$ = $1; $1->addMembersp($2);
-                          if ($2) $1->isParameterized(true);
                           $1->addExtendsp($3);
                           $1->addExtendsp($4);
                           $1->addMembersp($7);
-                          SYMP->popScope($$);
                           GRAMMARP->endLabel($<fl>8, $1, $8); }
         ;
 
@@ -7048,14 +7275,12 @@ classFront<classp>:             // IEEE: part of class_declaration
                         { $$ = new AstClass{$2, *$5};
                           $$->baseOverride($3);
                           $$->isVirtual($1);
-                          SYMP->pushNew($<classp>$);
                           v3Global.setHasClasses(); }
         //                      // IEEE: part of interface_class_declaration
         //                      // IEEE 1800-2023: lifetimeE removed
         |       yINTERFACE yCLASS idAny/*class_identifier*/
                         { $$ = new AstClass{$2, *$3};
                           $$->isInterfaceClass(true);
-                          SYMP->pushNew($<classp>$);
                           v3Global.setHasClasses(); }
         ;
 
@@ -7067,45 +7292,50 @@ classVirtualE<cbool>:
 classExtendsE<classExtendsp>:           // IEEE: part of class_declaration
         //                      // The classExtendsE rule relies on classFront having the
         //                      // new class scope correct via classFront
-                /* empty */                             { $$ = nullptr; $<scp>$ = nullptr; }
-        |       yEXTENDS classExtendsList               { $$ = $2; $<scp>$ = $<scp>2; }
+                /* empty */                             { $$ = nullptr; }
+        |       yEXTENDS classExtendsList               { $$ = $2; }
         ;
 
 classExtendsList<classExtendsp>:        // IEEE: part of class_declaration
-                classExtendsOne                         { $$ = $1; $<scp>$ = $<scp>1; }
-        |       classExtendsList ',' classExtendsOne    { $$ = addNextNull($1, $3); $<scp>$ = $<scp>3; }
+                classExtendsOne                         { $$ = $1; }
+        |       classExtendsList ',' classExtendsOne    { $$ = addNextNull($1, $3); }
         ;
 
 classExtendsOne<classExtendsp>:         // IEEE: part of class_declaration
                 class_typeExtImpList
+                        { $$ = new AstClassExtends{$1->fileline(), $1, GRAMMARP->m_inImplements}; }
+        |       class_typeExtImpList '(' list_of_argumentsE ')'
                         { $$ = new AstClassExtends{$1->fileline(), $1, GRAMMARP->m_inImplements};
-                          $<scp>$ = $<scp>1; }
+                          $$->addArgsp($3); }
+        //                      // IEEE-2023: Added: yEXTENDS class_type '(' yDEFAULT ')'
+        |       class_typeExtImpList '(' yDEFAULT ')'
+                        { $$ = new AstClassExtends{$1->fileline(), $1, GRAMMARP->m_inImplements};
+                          BBUNSUP($<fl>2, "Unsupported: 'extends' with 'default'"); }
         ;
 
 classImplementsE<classExtendsp>:        // IEEE: part of class_declaration
         //                      // All 1800-2012
-                /* empty */                             { $$ = nullptr; $<scp>$ = nullptr; }
+                /* empty */                             { $$ = nullptr; }
         |       yIMPLEMENTS
-        /*mid*/        { GRAMMARP->m_inImplements = true; $<scp>$ = nullptr; }
+        /*mid*/         { GRAMMARP->m_inImplements = true; }
         /*cont*/    classImplementsList
-                       { $$ = $3; $<scp>$ = $<scp>3;
-                         GRAMMARP->m_inImplements = false; }
+                        { $$ = $3;
+                          GRAMMARP->m_inImplements = false; }
         ;
 
 classImplementsList<classExtendsp>:     // IEEE: part of class_declaration
         //                      // All 1800-2012
-                classExtendsOne                         { $$ = $1; $<scp>$ = $<scp>1; }
+                classExtendsOne                         { $$ = $1; }
         |       classImplementsList ',' classExtendsOne
-                       { $$ = addNextNull($1, $3); $<scp>$ = $<scp>3; }
+                        { $$ = addNextNull($1, $3); }
         ;
 
 class_typeExtImpList<nodeExprp>:  // IEEE: class_type: "[package_scope] id [ parameter_value_assignment ]"
         //                      // but allow yaID__aTYPE for extends/implements
         //                      // If you follow the rules down, class_type is really a list via ps_class_identifier
-                class_typeExtImpOne                     { $$ = $1; $<scp>$ = $<scp>1; }
+                class_typeExtImpOne                     { $$ = $1; }
         |       class_typeExtImpList yP_COLONCOLON class_typeExtImpOne
-                        { $$ = new AstDot{$<fl>1, true, $1, $3};
-                          $<scp>$ = $<scp>3; }
+                        { $$ = new AstDot{$<fl>1, true, $1, $3}; }
         ;
 
 class_typeExtImpOne<nodeExprp>:  // part of IEEE: class_type, where we either get a package_scope component or class
@@ -7116,26 +7346,16 @@ class_typeExtImpOne<nodeExprp>:  // part of IEEE: class_type, where we either ge
         //                      // If idAny below is otherwise, not legal
                 idAny
         /*mid*/         { /* no nextId as not refing it above this*/ }
-        /*cont*/    parameter_value_assignmentE
-                        { $$ = new AstClassOrPackageRef{$<fl>1, *$1, $<scp>1, $3};
-                          $<scp>$ = $<scp>1; }
+        /*cont*/    parameter_value_assignmentClassE
+                        { $$ = new AstClassOrPackageRef{$<fl>1, *$1, nullptr, $3}; }
         |       idCC
         /*mid*/         { /* no nextId as not refing it above this*/ }
-        /*cont*/    parameter_value_assignmentE
-                        { $$ = new AstClassOrPackageRef{$<fl>1, *$1, $<scp>1, $3};
-                          $<scp>$ = $<scp>1; }
+        /*cont*/    parameter_value_assignmentClassE
+                        { $$ = new AstClassOrPackageRef{$<fl>1, *$1, nullptr, $3}; }
         //
         //                      // package_sopeIdFollows expanded
         |       yD_UNIT yP_COLONCOLON
-                        { $$ = new AstClassOrPackageRef{$<fl>1, "$unit", nullptr, nullptr};
-                          $<scp>$ = nullptr;  // No purpose otherwise, every symtab can see root
-                          SYMP->nextId(PARSEP->rootp()); }
-        //
-        |       yLOCAL__COLONCOLON yP_COLONCOLON
-                        { $$ = new AstClassOrPackageRef{$<fl>1, "local::", nullptr, nullptr};
-                          $<scp>$ = nullptr;  // UNSUP
-                          SYMP->nextId(PARSEP->rootp());
-                          BBUNSUP($1, "Unsupported: Randomize 'local::'"); }
+                        { $$ = new AstClassOrPackageRef{$<fl>1, "$unit", nullptr, nullptr}; }
         ;
 
 //=========
@@ -7146,7 +7366,7 @@ class_typeExtImpOne<nodeExprp>:  // part of IEEE: class_type, where we either ge
 //=== Below rules assume special scoping per above
 
 packageClassScopeNoId<nodep>:   // IEEE: [package_scope] not followed by yaID
-                packageClassScope                       { $$ = $1; $<scp>$ = $<scp>1; SYMP->nextId(nullptr); }
+                packageClassScope                       { $$ = $1; }
         ;
 
 packageClassScopeE<nodeExprp>:  // IEEE: [package_scope]
@@ -7154,8 +7374,8 @@ packageClassScopeE<nodeExprp>:  // IEEE: [package_scope]
         //                      //     if not needed must use packageClassScopeNoId
         //                      // TODO: To support classes should return generic type, not packagep
         //                      // class_qualifier := [ yLOCAL '::'  ] [ implicit_class_handle '.'  class_scope ]
-                /* empty */                             { $$ = nullptr; $<scp>$ = nullptr; }
-        |       packageClassScope                       { $$ = $1; $<scp>$ = $<scp>1; }
+                /* empty */                             { $$ = nullptr; }
+        |       packageClassScope                       { $$ = $1; }
         ;
 
 packageClassScope<nodeExprp>:   // IEEE: class_scope
@@ -7163,12 +7383,11 @@ packageClassScope<nodeExprp>:   // IEEE: class_scope
         //                      // IMPORTANT: The lexer will parse the following ID to be in the found package
         //                      //     if not needed must use packageClassScopeNoId
         //                      // In this parser <package_identifier>:: and <class_identifier>:: are indistinguishible
-        //                      // This copies <scp> to document it is important
-                packageClassScopeList                   { $$ = $1; $<scp>$ = $<scp>1; }
-        |       localNextId yP_COLONCOLON               { $$ = $1; $<scp>$ = $<scp>1; }
-        |       dollarUnitNextId yP_COLONCOLON          { $$ = $1; $<scp>$ = $<scp>1; }
+                packageClassScopeList                   { $$ = $1; }
+        |       localNextId yP_COLONCOLON               { $$ = $1; }
+        |       dollarUnitNextId yP_COLONCOLON          { $$ = $1; }
         |       dollarUnitNextId yP_COLONCOLON packageClassScopeList
-                        { $$ = new AstDot{$2, true, $1, $3}; $<scp>$ = $<scp>3; }
+                        { $$ = new AstDot{$2, true, $1, $3}; }
         ;
 
 packageClassScopeList<nodeExprp>:   // IEEE: class_type: "id [ parameter_value_assignment ]" but allow yaID__aTYPE
@@ -7177,9 +7396,9 @@ packageClassScopeList<nodeExprp>:   // IEEE: class_type: "id [ parameter_value_a
         //                      //     if not needed must use packageClassScopeNoId
         //                      // In this parser <package_identifier>:: and <class_identifier>:: are indistinguishible
         //                      // If you follow the rules down, class_type is really a list via ps_class_identifier
-                packageClassScopeItem                   { $$ = $1; $<scp>$ = $<scp>1; }
+                packageClassScopeItem                   { $$ = $1; }
         |       packageClassScopeList packageClassScopeItem
-                        { $$ = new AstDot{$<fl>2, true, $1, $2}; $<scp>$ = $<scp>2; }
+                        { $$ = new AstDot{$<fl>2, true, $1, $2}; }
         ;
 
 packageClassScopeItem<nodeExprp>:   // IEEE: package_scope or [package_scope]::[class_scope]
@@ -7188,14 +7407,14 @@ packageClassScopeItem<nodeExprp>:   // IEEE: package_scope or [package_scope]::[
         //                      // IEEE: class_type: "id [ parameter_value_assignment ]" but allow yaID__aTYPE
         //                      //vv mid rule action needed otherwise we might not have NextId in time to parse the id token
                 idCC
-        /*mid*/         { SYMP->nextId($<scp>1); }
+        /*mid*/         { }
         /*cont*/    yP_COLONCOLON
-                        { $$ = new AstClassOrPackageRef{$<fl>1, *$1, $<scp>1, nullptr}; $<scp>$ = $<scp>1; }
+                        { $$ = new AstClassOrPackageRef{$<fl>1, *$1, nullptr, nullptr}; }
         //
-        |       idCC parameter_value_assignment
-        /*mid*/         { SYMP->nextId($<scp>1); }   // Change next *after* we handle parameters, not before
+        |       idCC parameter_value_assignmentClass
+        /*mid*/         { }
         /*cont*/    yP_COLONCOLON
-                        { $$ = new AstClassOrPackageRef{$<fl>1, *$1, $<scp>1, $2}; $<scp>$ = $<scp>1; }
+                        { $$ = new AstClassOrPackageRef{$<fl>1, *$1, nullptr, $2}; }
         ;
 
 dollarUnitNextId<nodeExprp>:    // $unit
@@ -7203,17 +7422,15 @@ dollarUnitNextId<nodeExprp>:    // $unit
         //                      //     if not needed must use packageClassScopeNoId
         //                      // Must call nextId without any additional tokens following
                 yD_UNIT
-                        { $$ = new AstClassOrPackageRef{$1, "$unit", PARSEP->unitPackage($<fl>1), nullptr};
-                          SYMP->nextId(PARSEP->rootp()); }
+                        { $$ = new AstClassOrPackageRef{$1, "$unit", nullptr, nullptr}; }
         ;
 
-localNextId<nodeExprp>:         // local
+localNextId<nodeExprp>:         // local::
         //                      // IMPORTANT: The lexer will parse the following ID to be in the found package
         //                      //     if not needed must use packageClassScopeNoId
         //                      // Must call nextId without any additional tokens following
                 yLOCAL__COLONCOLON
-                        { $$ = new AstClassOrPackageRef{$1, "local::", PARSEP->unitPackage($<fl>1), nullptr};
-                          SYMP->nextId(PARSEP->rootp()); }
+                        { $$ = new AstClassOrPackageRef{$1, "local::", nullptr, nullptr}; }
         ;
 
 //^^^=========
@@ -7235,14 +7452,15 @@ class_item<nodep>:                      // ==IEEE: class_item
         |       class_method                            { $$ = $1; }
         |       class_constraint                        { $$ = $1; }
         //
-        |       class_declaration
-                        { $$ = nullptr; BBUNSUP($1, "Unsupported: class within class"); }
+        |       class_declaration                       { $$ = $1; }
         |       timeunits_declaration                   { $$ = $1; }
         |       covergroup_declaration
-                        { $$ = nullptr; BBUNSUP($1, "Unsupported: covergroup within class"); }
+                        { $$ = nullptr; BBCOVERIGN($1, "Ignoring unsupported: covergroup within class"); }
         //                      // local_parameter_declaration under parameter_declaration
         |       parameter_declaration ';'               { $$ = $1; }
         |       ';'                                     { $$ = nullptr; }
+        //                      // Verilator specific
+        |       vlScBlock                               { $$ = $1; }
         //
         |       error ';'                               { $$ = nullptr; }
         ;
@@ -7313,28 +7531,27 @@ memberQualOne<qualifiers>:                      // IEEE: property_qualifier + me
 class_constraint<constraintp>:  // ==IEEE: class_constraint
         //                      // IEEE: constraint_declaration
                 constraintStaticE yCONSTRAINT dynamic_override_specifiersE constraintIdNew constraint_block
-                        { $$ = $4; $$->isStatic($1); $$->addItemsp($5); SYMP->popScope($$); }
-        |       constraintStaticE yCONSTRAINT dynamic_override_specifiersE constraintIdNew '{' '}'
-                        { $$ = $4; $$->isStatic($1); SYMP->popScope($$); }
+                        { $$ = $4; $$->isStatic($1); $$->baseOverride($3); $$->addItemsp($5); }
         //                      // IEEE: constraint_prototype + constraint_prototype_qualifier
         |       constraintStaticE yCONSTRAINT dynamic_override_specifiersE constraintIdNew ';'
-                        { $$ = $4; $$->isStatic($1); SYMP->popScope($$); }
-        |       yEXTERN constraintStaticE yCONSTRAINT constraintIdNew ';'
-                        { $$ = $4; $$->isStatic($1); SYMP->popScope($4);
-                          BBUNSUP($1, "Unsupported: extern constraint"); }
+                        { $$ = $4; $$->isStatic($1); $$->baseOverride($3);
+                          $$->isExternProto(true); }
+        |       yEXTERN constraintStaticE yCONSTRAINT dynamic_override_specifiersE constraintIdNew ';'
+                        { $$ = $5; $$->isStatic($2); $$->baseOverride($4);
+                          $$->isExternProto(true); $$->isExternExplicit(true); }
         |       yPURE constraintStaticE yCONSTRAINT constraintIdNew ';'
-                        { $$ = $4; $$->isStatic($1); SYMP->popScope($4);
-                          BBUNSUP($1, "Unsupported: pure constraint"); }
+                        { $$ = $4; $$->isKwdPure($1); $$->isStatic($2); }
         ;
 
 constraintIdNew<constraintp>:  // IEEE: id part of class_constraint
                 idAny/*constraint_identifier*/
-                        { $$ = new AstConstraint{$<fl>1, *$1, nullptr};
-                          SYMP->pushNewUnderNodeOrCurrent($$, nullptr); }
+                        { $$ = new AstConstraint{$<fl>1, *$1, nullptr}; }
         ;
 
 constraint_block<nodep>:  // ==IEEE: constraint_block
-                '{' constraint_block_itemList '}'               { $$ = $2; }
+                '{' '}'                                         { $$ = nullptr; }
+        |       '{' constraint_block_itemList '}'               { $$ = $2; }
+        //
         |       '{' error '}'                                   { $$ = nullptr; }
         |       '{' constraint_block_itemList error '}'         { $$ = $2; }
         ;
@@ -7393,6 +7610,7 @@ constraint_expression<nodep>:  // ==IEEE: constraint_expression
                         { AstConstraintExpr* const newp = new AstConstraintExpr{$1, $3};
                           newp->isDisableSoft(true);
                           $$ = newp; }
+        //
         |       error ';'
                         { $$ = nullptr; }
         ;
@@ -7400,6 +7618,7 @@ constraint_expression<nodep>:  // ==IEEE: constraint_expression
 constraint_set<nodep>:  // ==IEEE: constraint_set
                 constraint_expression                   { $$ = $1; }
         |       '{' constraint_expressionList '}'       { $$ = $2; }
+        //
         |       '{' error '}'                           { $$ = nullptr; }
         |       '{' constraint_expressionList error '}' { $$ = $2; }
         ;
@@ -7416,15 +7635,16 @@ dist_item<distItemp>:  // ==IEEE: dist_item + dist_weight
                         { $$ = new AstDistItem{$2, $1, $3}; }
         |       value_range yP_COLONDIV expr
                         { $$ = new AstDistItem{$2, $1, $3}; $$->isWhole(true); }
-        //                              // IEEE 1800-2023 added:
+        //                      // IEEE 1800-2023 added:
         |       yDEFAULT yP_COLONDIV expr
                         { BBUNSUP($<fl>2, "Unsupported: 'default :/' constraint");
                           $$ = nullptr; }
         ;
 
-extern_constraint_declaration<nodep>:  // ==IEEE: extern_constraint_declaration
-                constraintStaticE yCONSTRAINT dynamic_override_specifiersE packageClassScopeE idAny constraint_block
-                        { $$ = nullptr; BBUNSUP($<fl>2, "Unsupported: extern constraint"); }
+extern_constraint_declaration<constraintp>:  // ==IEEE: extern_constraint_declaration
+                constraintStaticE yCONSTRAINT dynamic_override_specifiersE packageClassScopeE constraintIdNew constraint_block
+                        { $$ = $5; $$->isStatic($1); $$->isExternDef(true);
+                          $$->baseOverride($3); $$->classOrPackagep($4); $$->addItemsp($6); }
         ;
 
 constraintStaticE<cbool>:  // IEEE: part of extern_constraint_declaration
@@ -7450,80 +7670,130 @@ colon<fl>:                      // Generic colon that isn't making a label (e.g.
         ;
 
 //**********************************************************************
+// Config - config...endconfig
+
+//**********************************************************************
+// Config - lib.map
+
+//UNSUP library_text:  // == IEEE: library_text (note is top-level entry point)
+//UNSUP         library_description                     { }
+//UNSUP |       library_text library_description        { }
+//UNSUP ;
+
+//UNSUP library_description:  // == IEEE: library_description
+//UNSUP //                      // IEEE: library_declaration
+//UNSUP         yLIBRARY idAny/*library_identifier*/ file_path_specList ';'
+//UNSUP                 { BBUNSUP($<fl>1, "Unsupported: config lib.map library"); }
+//UNSUP         yLIBRARY idAny/*library_identifier*/ file_path_specList '-' yINCDIR file_path_specList ';'
+//UNSUP                 { BBUNSUP($<fl>1, "Unsupported: config lib.map library"); }
+//UNSUP //                      // IEEE: include_statement
+//UNSUP |       yINCLUDE file_path_spec ';'             { BBUNSUP($<fl>1, "Unsupported: config include"); }
+//UNSUP |       config_declaration                      { }
+//UNSUP |       ';'                                     { }
+//UNSUP ;
+
+//UNSUP file_path_specList:  // IEEE: file_path_spec { ',' file_path_spec }
+//UNSUP         file_path_spec                          { }
+//UNSUP |       file_path_specList ',' file_path_spec   { }
+//UNSUP ;
+
+//UNSUP file_path_spec:  // IEEE: file_path_spec
+//UNSUP         Needs to be lexer rule, Note '/' '*' must not be a comment.
+//UNSUP ;
+
+//**********************************************************************
 // VLT Files
 
 vltItem:
-
+        //                      // TODO support arbitrary order of arguments
                 vltOffFront
                         { V3Config::addIgnore($1, false, "*", 0, 0); }
-        |       vltOffFront yVLT_D_FILE yaSTRING
-                        { V3Config::addIgnore($1, false, *$3, 0, 0); }
-        |       vltOffFront yVLT_D_FILE yaSTRING yVLT_D_LINES yaINTNUM
-                        { V3Config::addIgnore($1, false, *$3, $5->toUInt(), $5->toUInt() + 1); }
-        |       vltOffFront yVLT_D_FILE yaSTRING yVLT_D_LINES yaINTNUM '-' yaINTNUM
-                        { V3Config::addIgnore($1, false, *$3, $5->toUInt(), $7->toUInt() + 1); }
-        |       vltOffFront yVLT_D_SCOPE yaSTRING
-                        { if ($1 != V3ErrorCode::I_TRACING) {
-                              $<fl>1->v3error("Argument -scope only supported for tracing_on/off");
-                          } else {
-                              V3Config::addScopeTraceOn(false, *$3, 0);
-                          }}
-        |       vltOffFront yVLT_D_SCOPE yaSTRING yVLT_D_LEVELS yaINTNUM
-                        { if ($1 != V3ErrorCode::I_TRACING) {
-                              $<fl>1->v3error("Argument -scope only supported for tracing_on/off_off");
-                          } else {
-                              V3Config::addScopeTraceOn(false, *$3, $5->toUInt());
-                          }}
-        |       vltOffFront yVLT_D_FILE yaSTRING yVLT_D_MATCH yaSTRING
+        |       vltOffFront vltDFile
+                        { V3Config::addIgnore($1, false, *$2, 0, 0); }
+        |       vltOffFront vltDFile yVLT_D_LINES yaINTNUM
+                        { V3Config::addIgnore($1, false, *$2, $4->toUInt(), $4->toUInt() + 1); }
+        |       vltOffFront vltDFile yVLT_D_LINES yaINTNUM '-' yaINTNUM
+                        { V3Config::addIgnore($1, false, *$2, $4->toUInt(), $6->toUInt() + 1); }
+        |       vltOffFront vltDFile vltDMatch
                         { if (($1 == V3ErrorCode::I_COVERAGE) || ($1 == V3ErrorCode::I_TRACING)) {
                               $<fl>1->v3error("Argument -match only supported for lint_off");
                           } else {
-                              V3Config::addIgnoreMatch($1, *$3, *$5);
+                              V3Config::addIgnoreMatch($1, *$2, "", *$3);
                           }}
-        |       vltOnFront
-                        { V3Config::addIgnore($1, true, "*", 0, 0); }
-        |       vltOnFront yVLT_D_FILE yaSTRING
-                        { V3Config::addIgnore($1, true, *$3, 0, 0); }
-        |       vltOnFront yVLT_D_FILE yaSTRING yVLT_D_LINES yaINTNUM
-                        { V3Config::addIgnore($1, true, *$3, $5->toUInt(), $5->toUInt() + 1); }
-        |       vltOnFront yVLT_D_FILE yaSTRING yVLT_D_LINES yaINTNUM '-' yaINTNUM
-                        { V3Config::addIgnore($1, true, *$3, $5->toUInt(), $7->toUInt() + 1); }
-        |       vltOnFront yVLT_D_SCOPE yaSTRING
+        |       vltOffFront vltDFile vltDContents
+                        { if (($1 == V3ErrorCode::I_COVERAGE) || ($1 == V3ErrorCode::I_TRACING)) {
+                              $<fl>1->v3error("Argument -match only supported for lint_off");
+                          } else {
+                              V3Config::addIgnoreMatch($1, *$2, *$3, "*");
+                          }}
+        |       vltOffFront vltDFile vltDContents vltDMatch
+                        { if (($1 == V3ErrorCode::I_COVERAGE) || ($1 == V3ErrorCode::I_TRACING)) {
+                              $<fl>1->v3error("Argument -match only supported for lint_off");
+                          } else {
+                              V3Config::addIgnoreMatch($1, *$2, *$3, *$4);
+                          }}
+        |       vltOffFront vltDScope
                         { if ($1 != V3ErrorCode::I_TRACING) {
                               $<fl>1->v3error("Argument -scope only supported for tracing_on/off");
                           } else {
-                              V3Config::addScopeTraceOn(true, *$3, 0);
+                              V3Config::addScopeTraceOn(false, *$2, 0);
                           }}
-        |       vltOnFront yVLT_D_SCOPE yaSTRING yVLT_D_LEVELS yaINTNUM
+        |       vltOffFront vltDScope vltDLevels
                         { if ($1 != V3ErrorCode::I_TRACING) {
                               $<fl>1->v3error("Argument -scope only supported for tracing_on/off_off");
                           } else {
-                              V3Config::addScopeTraceOn(true, *$3, $5->toUInt());
+                              V3Config::addScopeTraceOn(false, *$2, $3->toUInt());
+                          }}
+        |       vltOnFront
+                        { V3Config::addIgnore($1, true, "*", 0, 0); }
+        |       vltOnFront vltDFile
+                        { V3Config::addIgnore($1, true, *$2, 0, 0); }
+        |       vltOnFront vltDFile yVLT_D_LINES yaINTNUM
+                        { V3Config::addIgnore($1, true, *$2, $4->toUInt(), $4->toUInt() + 1); }
+        |       vltOnFront vltDFile yVLT_D_LINES yaINTNUM '-' yaINTNUM
+                        { V3Config::addIgnore($1, true, *$2, $4->toUInt(), $6->toUInt() + 1); }
+        |       vltOnFront vltDScope
+                        { if ($1 != V3ErrorCode::I_TRACING) {
+                              $<fl>1->v3error("Argument -scope only supported for tracing_on/off");
+                          } else {
+                              V3Config::addScopeTraceOn(true, *$2, 0);
+                          }}
+        |       vltOnFront vltDScope vltDLevels
+                        { if ($1 != V3ErrorCode::I_TRACING) {
+                              $<fl>1->v3error("Argument -scope only supported for tracing_on/off_off");
+                          } else {
+                              V3Config::addScopeTraceOn(true, *$2, $3->toUInt());
                           }}
         |       vltVarAttrFront vltDModuleE vltDFTaskE vltVarAttrVarE attr_event_controlE
                         { V3Config::addVarAttr($<fl>1, *$2, *$3, *$4, $1, $5); }
         |       vltInlineFront vltDModuleE vltDFTaskE
                         { V3Config::addInline($<fl>1, *$2, *$3, $1); }
-        |       yVLT_COVERAGE_BLOCK_OFF yVLT_D_FILE yaSTRING
-                        { V3Config::addCoverageBlockOff(*$3, 0); }
-        |       yVLT_COVERAGE_BLOCK_OFF yVLT_D_FILE yaSTRING yVLT_D_LINES yaINTNUM
-                        { V3Config::addCoverageBlockOff(*$3, $5->toUInt()); }
-        |       yVLT_COVERAGE_BLOCK_OFF yVLT_D_MODULE yaSTRING yVLT_D_BLOCK yaSTRING
-                        { V3Config::addCoverageBlockOff(*$3, *$5); }
-        |       yVLT_FULL_CASE yVLT_D_FILE yaSTRING
-                        { V3Config::addCaseFull(*$3, 0); }
-        |       yVLT_FULL_CASE yVLT_D_FILE yaSTRING yVLT_D_LINES yaINTNUM
-                        { V3Config::addCaseFull(*$3, $5->toUInt()); }
+        |       yVLT_COVERAGE_BLOCK_OFF vltDFile
+                        { V3Config::addCoverageBlockOff(*$2, 0); }
+        |       yVLT_COVERAGE_BLOCK_OFF vltDFile yVLT_D_LINES yaINTNUM
+                        { V3Config::addCoverageBlockOff(*$2, $4->toUInt()); }
+        |       yVLT_COVERAGE_BLOCK_OFF vltDModule vltDBlock
+                        { V3Config::addCoverageBlockOff(*$2, *$3); }
+        |       yVLT_FULL_CASE vltDFile
+                        { V3Config::addCaseFull(*$2, 0); }
+        |       yVLT_FULL_CASE vltDFile yVLT_D_LINES yaINTNUM
+                        { V3Config::addCaseFull(*$2, $4->toUInt()); }
         |       yVLT_HIER_BLOCK vltDModuleE
                         { V3Config::addModulePragma(*$2, VPragmaType::HIER_BLOCK); }
         |       yVLT_HIER_PARAMS vltDModuleE
                         { V3Config::addModulePragma(*$2, VPragmaType::HIER_PARAMS); }
-        |       yVLT_PARALLEL_CASE yVLT_D_FILE yaSTRING
-                        { V3Config::addCaseParallel(*$3, 0); }
-        |       yVLT_PARALLEL_CASE yVLT_D_FILE yaSTRING yVLT_D_LINES yaINTNUM
-                        { V3Config::addCaseParallel(*$3, $5->toUInt()); }
-        |       yVLT_PROFILE_DATA yVLT_D_MODEL yaSTRING yVLT_D_MTASK yaSTRING yVLT_D_COST yaINTNUM
-                        { V3Config::addProfileData($<fl>1, *$3, *$5, $7->toUQuad()); }
+        |       yVLT_HIER_WORKERS vltDModuleE vltDWorkers
+                        { V3Config::addHierWorkers($<fl>1, *$2, $3->toSInt()); }
+        |       yVLT_HIER_WORKERS vltDHierDpi vltDWorkers
+                        { V3Config::addHierWorkers($<fl>1, *$2, $3->toSInt()); }
+        |       yVLT_PARALLEL_CASE vltDFile
+                        { V3Config::addCaseParallel(*$2, 0); }
+        |       yVLT_PARALLEL_CASE vltDFile yVLT_D_LINES yaINTNUM
+                        { V3Config::addCaseParallel(*$2, $4->toUInt()); }
+        |       yVLT_PROFILE_DATA vltDHierDpi vltDCost
+                        { V3Config::addProfileData($<fl>1, *$2, $3->toUQuad()); }
+        |       yVLT_PROFILE_DATA vltDModel vltDMtask vltDCost
+                        { V3Config::addProfileData($<fl>1, *$2, *$3, $4->toUQuad()); }
         ;
 
 vltOffFront<errcodeen>:
@@ -7550,15 +7820,63 @@ vltOnFront<errcodeen>:
                           if ($$ == V3ErrorCode::EC_ERROR) { $1->v3error("Unknown error code: '" << *$3 << "'"); } }
         ;
 
-vltDModuleE<strp>:
+vltDBlock<strp>:  // --block <arg>
+                yVLT_D_BLOCK str                        { $$ = $2; }
+        ;
+
+vltDContents<strp>:
+                yVLT_D_CONTENTS str                     { $$ = $2; }
+        ;
+
+vltDCost<nump>:  // --cost <arg>
+                yVLT_D_COST yaINTNUM                    { $$ = $2; }
+        ;
+
+vltDFile<strp>:  // --file <arg>
+                yVLT_D_FILE str                         { $$ = $2; }
+        ;
+
+vltDHierDpi<strp>:  // --hier-dpi <arg>
+                yVLT_D_HIER_DPI str                     { $$ = $2; }
+        ;
+
+vltDLevels<nump>:  // --levels <arg>
+                yVLT_D_LEVELS yaINTNUM                  { $$ = $2; }
+        ;
+
+vltDMatch<strp>:  // --match <arg>
+                yVLT_D_MATCH str                        { $$ = $2; }
+        ;
+
+vltDModel<strp>:  // --model <arg>
+                yVLT_D_MODEL str                        { $$ = $2; }
+        ;
+
+vltDMtask<strp>:  // --mtask <arg>
+                yVLT_D_MTASK str                        { $$ = $2; }
+        ;
+
+vltDModule<strp>:  // --module <arg>
+                yVLT_D_MODULE str                       { $$ = $2; }
+        ;
+
+vltDModuleE<strp>:  // [--module <arg>]
                 /* empty */                             { static string unit = "__024unit"; $$ = &unit; }
-        |       yVLT_D_MODULE str                       { $$ = $2; }
+        |       vltDModule                              { $$ = $1; }
+        ;
+
+vltDScope<strp>:  // --scope <arg>
+                yVLT_D_SCOPE str                        { $$ = $2; }
         ;
 
 vltDFTaskE<strp>:
                 /* empty */                             { static string empty; $$ = &empty; }
         |       yVLT_D_FUNCTION str                     { $$ = $2; }
         |       yVLT_D_TASK str                         { $$ = $2; }
+        ;
+
+vltDWorkers<nump>:  // --workers <arg>
+                yVLT_D_WORKERS yaINTNUM                  { $$ = $2; }
         ;
 
 vltInlineFront<cbool>:

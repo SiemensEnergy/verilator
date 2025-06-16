@@ -4,7 +4,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2022-2024 by Wilson Snyder. This program is free software; you can
+// Copyright 2022-2025 by Wilson Snyder. This program is free software; you can
 // redistribute it and/or modify it under the terms of either the GNU Lesser
 // General Public License Version 3 or the Perl Artistic License Version 2.0.
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
@@ -14,13 +14,16 @@
 /// \file
 /// \brief Verilated IEEE std:: header
 ///
-/// This file is included automatically by Verilator when a std::mailbox or
-/// std::semaphore is referenced.
+/// This file is included automatically by Verilator, unless '--no-std-package'
+/// is used.
 ///
 /// This file is not part of the Verilated public-facing API.
 /// It is only for internal use.
 ///
 //*************************************************************************
+//
+// The following keywords from this file are hardcoded for detection in the parser:
+// "mailbox", "process", "randomize", "semaphore", "std"
 
 // verilator lint_off DECLFILENAME
 // verilator lint_off TIMESCALEMOD
@@ -171,6 +174,32 @@ package std;
          wait (status() == FINISHED || status() == KILLED);
 `endif
       endtask
+
+      // Two process references are equal if the different classes' containing
+      // m_process are equal. Can't yet use <=> as the base class template
+      // comparisons doesn't define <=> as they don't yet require --timing and C++20.
+`ifdef VERILATOR_TIMING
+`systemc_header_post
+template<> template<>
+inline bool VlClassRef<`systemc_class_name>::operator==(const VlClassRef<`systemc_class_name>& rhs) const {
+    if (!m_objp && !rhs.m_objp) return true;
+    if (!m_objp || !rhs.m_objp) return false;
+    return m_objp->__PVT__m_process == rhs.m_objp->__PVT__m_process;
+};
+template<> template<>
+inline bool VlClassRef<`systemc_class_name>::operator!=(const VlClassRef<`systemc_class_name>& rhs) const {
+    if (!m_objp && !rhs.m_objp) return false;
+    if (!m_objp || !rhs.m_objp) return true;
+    return m_objp->__PVT__m_process != rhs.m_objp->__PVT__m_process;
+};
+template<> template<>
+inline bool VlClassRef<`systemc_class_name>::operator<(const VlClassRef<`systemc_class_name>& rhs) const {
+    if (!m_objp && !rhs.m_objp) return false;
+    if (!m_objp || !rhs.m_objp) return false;
+    return m_objp->__PVT__m_process < rhs.m_objp->__PVT__m_process;
+};
+`verilog
+`endif
 
       // When really implemented, srandom must operate on the process, but for
       // now rely on the srandom() that is automatically generated for all

@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -94,13 +94,13 @@ class InlineMarkVisitor final : public VNVisitor {
     void cantInline(const char* reason, bool hard) {
         if (hard) {
             if (m_modp->user2() != CIL_NOTHARD) {
-                UINFO(4, "  No inline hard: " << reason << " " << m_modp << endl);
+                UINFO(4, "  No inline hard: " << reason << " " << m_modp);
                 m_modp->user2(CIL_NOTHARD);
                 ++m_statUnsup;
             }
         } else {
             if (m_modp->user2() == CIL_MAYBE) {
-                UINFO(4, "  No inline soft: " << reason << " " << m_modp << endl);
+                UINFO(4, "  No inline soft: " << reason << " " << m_modp);
                 m_modp->user2(CIL_NOTSOFT);
             }
         }
@@ -109,6 +109,7 @@ class InlineMarkVisitor final : public VNVisitor {
     // VISITORS
     void visit(AstNodeModule* nodep) override {
         UASSERT_OBJ(!m_modp, nodep, "Unsupported: Nested modules");
+        VL_RESTORER(m_modp);
         m_modp = nodep;
         m_allMods.push_back(nodep);
         m_modp->user2(CIL_MAYBE);
@@ -123,7 +124,6 @@ class InlineMarkVisitor final : public VNVisitor {
         }
 
         iterateChildren(nodep);
-        m_modp = nullptr;
     }
     void visit(AstClass* nodep) override {
         // TODO allow inlining of modules that have classes
@@ -220,7 +220,7 @@ class InlineMarkVisitor final : public VNVisitor {
                                   || refs * statements < v3Global.opt.inlineMult());
             m_moduleState(modp).m_inlined = doit;
             UINFO(4, " Inline=" << doit << " Possible=" << allowed << " Refs=" << refs
-                                << " Stmts=" << statements << "  " << modp << endl);
+                                << " Stmts=" << statements << "  " << modp);
         }
     }
     //--------------------
@@ -252,6 +252,7 @@ class InlineRelinkVisitor final : public VNVisitor {
     std::unordered_set<std::string> m_renamedInterfaces;  // Name of renamed interface variables
     AstNodeModule* const m_modp;  // Current module
     const AstCell* const m_cellp;  // Cell being cloned
+    bool m_initialStatic = false;  // Inside InitialStatic
 
     // VISITORS
     void visit(AstCellInline* nodep) override {
@@ -260,7 +261,7 @@ class InlineRelinkVisitor final : public VNVisitor {
         m_modp->addInlinesp(nodep);
         // Rename
         nodep->name(m_cellp->name() + "__DOT__" + nodep->name());
-        UINFO(6, "    Inline " << nodep << endl);
+        UINFO(6, "    Inline " << nodep);
         // Do CellInlines under this, but don't move them
         iterateChildren(nodep);
     }
@@ -284,17 +285,18 @@ class InlineRelinkVisitor final : public VNVisitor {
             FileLine* const flp = nodep->fileline();
             AstConst* const exprconstp = VN_CAST(nodep->user2p(), Const);
             AstVarRef* exprvarrefp = VN_CAST(nodep->user2p(), VarRef);
-            UINFO(8, "connectto: " << nodep->user2p() << endl);
+            UINFO(8, "connectto: " << nodep->user2p());
             UASSERT_OBJ(exprconstp || exprvarrefp, nodep,
                         "Unknown interconnect type; pinReconnectSimple should have cleared up");
             if (exprconstp) {
                 m_modp->addStmtsp(new AstAssignW{flp, new AstVarRef{flp, nodep, VAccess::WRITE},
                                                  exprconstp->cloneTree(false)});
+                nodep->user4(true);  // Making assignment to it
             } else if (nodep->user3()) {
                 // Public variable at the lower module end - we need to make sure we propagate
                 // the logic changes up and down; if we aliased, we might
                 // remove the change detection on the output variable.
-                UINFO(9, "public pin assign: " << exprvarrefp << endl);
+                UINFO(9, "public pin assign: " << exprvarrefp);
                 UASSERT_OBJ(!nodep->isNonOutput(), nodep, "Outputs only - inputs use AssignAlias");
                 m_modp->addStmtsp(new AstAssignW{flp, exprvarrefp->cloneTree(false),
                                                  new AstVarRef{flp, nodep, VAccess::READ}});
@@ -302,9 +304,10 @@ class InlineRelinkVisitor final : public VNVisitor {
                 // Public variable at this end and it is an unpacked array. We need to assign
                 // instead of aliased, because otherwise it will pass V3Slice and invalid
                 // code will be emitted.
-                UINFO(9, "assign to public and unpacked: " << nodep << endl);
+                UINFO(9, "assign to public and unpacked: " << nodep);
                 exprvarrefp = exprvarrefp->cloneTree(false);
                 exprvarrefp->access(VAccess::READ);
+                nodep->user4(true);  // Making assignment to it
                 m_modp->addStmtsp(
                     new AstAssignW{flp, new AstVarRef{flp, nodep, VAccess::WRITE}, exprvarrefp});
             } else if (nodep->isIfaceRef()) {
@@ -322,6 +325,7 @@ class InlineRelinkVisitor final : public VNVisitor {
                 exprvarrefp->access(VAccess::READ);
                 AstVarRef* const nodeVarRefp = new AstVarRef{flp, nodep, VAccess::WRITE};
                 if (nodep->isForced() && nodep->direction() == VDirection::INPUT) {
+                    nodep->user4(true);  // Making assignment to it
                     m_modp->addStmtsp(new AstAssignW{flp, nodeVarRefp, exprvarrefp});
                 } else if (nodep->isForced() && nodep->direction() == VDirection::OUTPUT) {
                     exprvarrefp->access(VAccess::WRITE);
@@ -374,6 +378,22 @@ class InlineRelinkVisitor final : public VNVisitor {
         nodep->name(m_cellp->name() + "__DOT__" + nodep->name());
         iterateChildren(nodep);
     }
+    void visit(AstInitialStatic* nodep) override {
+        VL_RESTORER(m_initialStatic);
+        m_initialStatic = true;
+        iterateChildren(nodep);
+    }
+    void visit(AstNodeAssign* nodep) override {
+        if (AstVarRef* const varrefp = VN_CAST(nodep->lhsp(), VarRef)) {
+            if (m_initialStatic && varrefp->varp()->user2() && varrefp->varp()->user4()) {
+                // Initial assignment to i/o we are overriding, can remove
+                UINFO(9, "Remove InitialStatic " << nodep);
+                VL_DO_DANGLING(pushDeletep(nodep->unlinkFrBack()), nodep);
+                return;
+            }
+        }
+        iterateChildren(nodep);
+    }
     void visit(AstVarRef* nodep) override {
         if (nodep->varp()->user2p()  // It's being converted to an alias.
             && !nodep->varp()->user3()
@@ -418,7 +438,7 @@ class InlineRelinkVisitor final : public VNVisitor {
         if (m_renamedInterfaces.count(nodep->dotted())) {
             nodep->dotted(m_cellp->name() + "__DOT__" + nodep->dotted());
         }
-        UINFO(8, "   " << nodep << endl);
+        UINFO(8, "   " << nodep);
         iterateChildren(nodep);
     }
 
@@ -470,6 +490,7 @@ class InlineVisitor final : public VNVisitor {
     //   AstVar::user2p()       // AstVarRef*/AstConst*  Points to signal this
     //                          // is a direct connect to
     //   AstVar::user3()        // bool    Don't alias the user2, keep it as signal
+    //   AstVar::user4()        // bool    Was input, remove InitialStatic Assign
     //   AstCell::user4         // AstCell* of the created clone
     const VNUser4InUse m_inuser4;
 
@@ -481,7 +502,7 @@ class InlineVisitor final : public VNVisitor {
 
     // METHODS
     void inlineCell(AstCell* nodep) {
-        UINFO(5, " Inline CELL   " << nodep << endl);
+        UINFO(5, " Inline CELL   " << nodep);
 
         const VNUser2InUse user2InUse;
         const VNUser3InUse user3InUse;
@@ -529,7 +550,7 @@ class InlineVisitor final : public VNVisitor {
         // Create assignments to the pins
         for (AstPin* pinp = nodep->pinsp(); pinp; pinp = VN_AS(pinp->nextp(), Pin)) {
             if (!pinp->exprp()) continue;
-            UINFO(6, "     Pin change from " << pinp->modVarp() << endl);
+            UINFO(6, "     Pin change from " << pinp->modVarp());
 
             AstNode* const connectRefp = pinp->exprp();
             UASSERT_OBJ(VN_IS(connectRefp, Const) || VN_IS(connectRefp, VarRef), pinp,
@@ -551,8 +572,8 @@ class InlineVisitor final : public VNVisitor {
             // One to one interconnect won't make a temporary variable.
             // This prevents creating a lot of extra wires for clock signals.
             // It will become a tracing alias.
-            UINFO(6, "One-to-one " << connectRefp << endl);
-            UINFO(6, "       -to " << pinNewVarp << endl);
+            UINFO(6, "One-to-one " << connectRefp);
+            UINFO(6, "       -to " << pinNewVarp);
             pinNewVarp->user2p(connectRefp);
             // Public output inside the cell must go via an assign rather
             // than alias.  Else the public logic will set the alias, losing
@@ -584,13 +605,13 @@ class InlineVisitor final : public VNVisitor {
     }
     void visit(AstNodeModule* nodep) override {
         UASSERT_OBJ(!m_modp, nodep, "Unsupported: Nested modules");
+        VL_RESTORER(m_modp);
         m_modp = nodep;
         // Iterate the stored cells directly to reduce traversal
         for (AstCell* const cellp : m_moduleState(nodep).m_childCells) {
             if (m_moduleState(cellp->modp()).m_inlined) inlineCell(cellp);
         }
         m_moduleState(nodep).m_childCells.clear();
-        m_modp = nullptr;
     }
     void visit(AstIfaceRefDType* nodep) override {
         if (nodep->user1()) {
@@ -603,10 +624,10 @@ class InlineVisitor final : public VNVisitor {
 
     //--------------------
     void visit(AstCell* nodep) override {  // LCOV_EXCL_START
-        nodep->v3fatal("Traversal should have been short circuited");
+        nodep->v3fatalSrc("Traversal should have been short circuited");
     }
     void visit(AstNodeStmt* nodep) override {
-        nodep->v3fatal("Traversal should have been short circuited");
+        nodep->v3fatalSrc("Traversal should have been short circuited");
     }  // LCOV_EXCL_STOP
     void visit(AstNodeFile*) override {}  // Accelerate
     void visit(AstNodeDType*) override {}  // Accelerate
@@ -627,7 +648,7 @@ public:
 // Inline class functions
 
 void V3Inline::inlineAll(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
 
     {
         const VNUser1InUse m_inuser1;  // output of InlineMarkVisitor, input to InlineVisitor.
@@ -643,8 +664,8 @@ void V3Inline::inlineAll(AstNetlist* nodep) {
         for (AstNodeModule* modp = v3Global.rootp()->modulesp(); modp;
              modp = VN_AS(modp->nextp(), NodeModule)) {
             UASSERT_OBJ(!moduleState(modp).m_inlined, modp,
-                        "Inlined module should have been deleted when the last cell referencing "
-                        "it was inlined");
+                        "Inlined module should have been deleted when the last instance "
+                        "referencing it was inlined");
         }
     }
 

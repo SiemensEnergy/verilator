@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -239,7 +239,7 @@ TimingKit prepareTiming(AstNetlist* const netlistp) {
             }
         }
         void visit(AstNodeVarRef* nodep) override {
-            if (m_gatherVars && nodep->access().isWriteOrRW()
+            if (m_gatherVars && nodep->access().isWriteOrRW() && !nodep->varp()->ignoreSchedWrite()
                 && !nodep->varScopep()->user2SetOnce()) {
                 m_writtenBySuspendable.push_back(nodep->varScopep());
             }
@@ -338,6 +338,7 @@ void transformForks(AstNetlist* const netlistp) {
             iterateChildren(nodep);
         }
         void visit(AstCFunc* nodep) override {
+            VL_RESTORER(m_funcp);
             m_funcp = nodep;
             m_awaitMoved = false;
             iterateChildren(nodep);
@@ -346,7 +347,6 @@ void transformForks(AstNetlist* const netlistp) {
                 // co_return at the end (either that or a co_await is required in a coroutine
                 nodep->addStmtsp(new AstCStmt{nodep->fileline(), "co_return;\n"});
             }
-            m_funcp = nullptr;
         }
         void visit(AstVar* nodep) override {
             if (!m_forkp) nodep->user1(true);
@@ -368,7 +368,9 @@ void transformForks(AstNetlist* const netlistp) {
             // Start with children, so later we only find awaits that are actually in this begin
             m_beginHasAwaits = false;
             iterateChildrenConst(nodep);
-            if (m_beginHasAwaits || nodep->needProcess()) {
+            if (!nodep->stmtsp()) {
+                nodep->unlinkFrBack();
+            } else if (m_beginHasAwaits || nodep->needProcess()) {
                 UASSERT_OBJ(!nodep->name().empty(), nodep, "Begin needs a name");
                 // Create a function to put this begin's statements in
                 FileLine* const flp = nodep->fileline();
@@ -407,11 +409,7 @@ void transformForks(AstNetlist* const netlistp) {
             } else {
                 // The begin has neither awaits nor a process::self call, just inline the
                 // statements
-                if (nodep->stmtsp()) {
-                    nodep->replaceWith(nodep->stmtsp()->unlinkFrBackWithNext());
-                } else {
-                    nodep->unlinkFrBack();
-                }
+                nodep->replaceWith(nodep->stmtsp()->unlinkFrBackWithNext());
             }
             VL_DO_DANGLING(nodep->deleteTree(), nodep);
         }
@@ -422,7 +420,6 @@ void transformForks(AstNetlist* const netlistp) {
         void visit(AstExprStmt* nodep) override { iterateChildren(nodep); }
 
         //--------------------
-        void visit(AstNodeExpr*) override {}  // Accelerate
         void visit(AstNode* nodep) override { iterateChildren(nodep); }
 
     public:

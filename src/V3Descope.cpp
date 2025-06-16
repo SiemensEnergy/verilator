@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -74,7 +74,7 @@ class DescopeVisitor final : public VNVisitor {
             string name = scopep->name();
             string::size_type pos;
             if ((pos = name.rfind('.')) != string::npos) name.erase(0, pos + 1);
-            ret.thisPtr = VSelfPointerText{VSelfPointerText::This(), name};
+            ret.thisPtr = VSelfPointerText{VSelfPointerText::This{}, name};
         }
         return ret.thisPtr;
     }
@@ -97,16 +97,16 @@ class DescopeVisitor final : public VNVisitor {
         // Static functions can't use relative references via 'this->'
         const bool relativeRefOk = !m_funcp->isStatic();
 
-        UINFO(8, "      Descope ref under " << m_scopep << endl);
-        UINFO(8, "              ref to    " << scopep << endl);
-        UINFO(8, "             aboveScope " << scopep->aboveScopep() << endl);
+        UINFO(8, "      Descope ref under " << m_scopep);
+        UINFO(8, "              ref to    " << scopep);
+        UINFO(8, "             aboveScope " << scopep->aboveScopep());
 
         if (VN_IS(scopep->modp(), Class)) {
             // Direct reference to class members are from within the class itself, references from
             // outside the class must go via AstMemberSel
-            return VSelfPointerText{VSelfPointerText::This()};
+            return VSelfPointerText{VSelfPointerText::This{}};
         } else if (relativeRefOk && scopep == m_scopep) {
-            return VSelfPointerText{VSelfPointerText::This()};
+            return VSelfPointerText{VSelfPointerText::This{}};
         } else if (relativeRefOk && !m_modSingleton && scopep->aboveScopep() == m_scopep
                    && VN_IS(scopep->modp(), Module)) {
             // Reference to scope of instance directly under this module, can just "this->cell",
@@ -133,7 +133,7 @@ class DescopeVisitor final : public VNVisitor {
             const bool moreOfSame1 = (nextIt1 != m_modFuncs.end() && nextIt1->first == name);
             if (moreOfSame1) {
                 // Multiple functions under this name, need a wrapper function
-                UINFO(6, "  Wrapping " << name << " multifuncs\n");
+                UINFO(6, "  Wrapping " << name << " multifuncs");
                 AstCFunc* const newfuncp = topFuncp->cloneTree(false);
                 if (newfuncp->initsp()) newfuncp->initsp()->unlinkFrBackWithNext()->deleteTree();
                 if (newfuncp->stmtsp()) newfuncp->stmtsp()->unlinkFrBackWithNext()->deleteTree();
@@ -152,9 +152,8 @@ class DescopeVisitor final : public VNVisitor {
                         = (nextIt2 != m_modFuncs.end() && nextIt2->first == name);
                     UASSERT_OBJ(funcp->scopep(), funcp, "Not scoped");
 
-                    UINFO(6, "     Wrapping " << name << " " << funcp << endl);
-                    UINFO(6,
-                          "  at " << newfuncp->argTypes() << " und " << funcp->argTypes() << endl);
+                    UINFO(6, "     Wrapping " << name << " " << funcp);
+                    UINFO(6, "  at " << newfuncp->argTypes() << " und " << funcp->argTypes());
                     funcp->declPrivate(true);
                     AstVarRef* argsp = nullptr;
                     for (AstNode* stmtp = newfuncp->argsp(); stmtp; stmtp = stmtp->nextp()) {
@@ -199,7 +198,7 @@ class DescopeVisitor final : public VNVisitor {
                 if (debug() >= 9) newfuncp->dumpTree("-  newfunc: ");
             } else {
                 // Only a single function under this name, we can rename it
-                UINFO(6, "  Wrapping " << name << " just one " << topFuncp << endl);
+                UINFO(6, "  Wrapping " << name << " just one " << topFuncp);
                 topFuncp->name(name);
             }
         }
@@ -208,18 +207,16 @@ class DescopeVisitor final : public VNVisitor {
     // VISITORS
     void visit(AstNodeModule* nodep) override {
         VL_RESTORER(m_modp);
-        {
-            m_modp = nodep;
-            m_modFuncs.clear();
-            m_modSingleton = modIsSingleton(m_modp);
-            iterateChildren(nodep);
-            makePublicFuncWrappers();
-        }
+        m_modp = nodep;
+        m_modFuncs.clear();
+        m_modSingleton = modIsSingleton(m_modp);
+        iterateChildren(nodep);
+        makePublicFuncWrappers();
     }
     void visit(AstScope* nodep) override {
+        VL_RESTORER(m_scopep);
         m_scopep = nodep;
         iterateChildren(nodep);
-        m_scopep = nullptr;
     }
     void visit(AstVarScope* nodep) override {
         // Delete the varscope when we're finished
@@ -233,7 +230,7 @@ class DescopeVisitor final : public VNVisitor {
             return;
         }
         // Convert the hierch name
-        UINFO(9, "  ref-in " << nodep << endl);
+        UINFO(9, "  ref-in " << nodep);
         UASSERT_OBJ(m_scopep, nodep, "Node not under scope");
         const AstVar* const varp = nodep->varScopep()->varp();
         const AstScope* const scopep = nodep->varScopep()->scopep();
@@ -247,10 +244,10 @@ class DescopeVisitor final : public VNVisitor {
             nodep->selfPointer(descopedSelfPointer(scopep));
         }
         nodep->varScopep(nullptr);
-        UINFO(9, "  refout " << nodep << " selfPtr=" << nodep->selfPointer().asString() << endl);
+        UINFO(9, "  refout " << nodep << " selfPtr=" << nodep->selfPointer().asString());
     }
     void visit(AstCCall* nodep) override {
-        // UINFO(9, "       " << nodep << endl);
+        // UINFO(9, "       " << nodep);
         iterateChildren(nodep);
         // Convert the hierch name
         UASSERT_OBJ(m_scopep, nodep, "Node not under scope");
@@ -297,7 +294,7 @@ public:
 // Descope class functions
 
 void V3Descope::descopeAll(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     { DescopeVisitor{nodep}; }  // Destruct before checking
     V3Global::dumpCheckGlobalTree("descope", 0, dumpTreeEitherLevel() >= 3);
 }

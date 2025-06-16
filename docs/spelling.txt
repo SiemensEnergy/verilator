@@ -19,7 +19,9 @@ Asciidoc
 Ashutosh
 Ast
 Atmel
+Augustin
 Aurelien
+Badáň
 Bagri
 Balboni
 Baltazar
@@ -103,15 +105,19 @@ Eiler
 Eivind
 El
 Elbourne
+Elzeftawi
 Embecosm
 Engstrom
 Enzo
 Eugen
+Fabre
 Fabrizio
 Faucher
 Faure
+Feinberg
 Fekete
 Ferrandi
+Filip
 Flachs
 Flavien
 Florian
@@ -244,7 +250,9 @@ Liu
 Liwei
 Lockhart
 Longo
+LteS
 Luca
+Luiza
 Lussier
 Lübeck
 MMD
@@ -266,6 +274,7 @@ Mednick
 Mei
 Melo
 Menküc
+Menon
 Michail
 Michiels
 Microsystems
@@ -275,6 +284,8 @@ MinW
 Mindspeed
 MingW
 Miodrag
+Moberg
+Mobert
 ModelSim
 Modport
 Moinak
@@ -288,11 +299,13 @@ NaN
 Nalbantis
 Nandor
 Narayan
+Narcis
 Nassim
 Nauticus
 Newgard
 Nigam
 Nikana
+Niraj
 Niranjan
 Nitza
 Noack
@@ -337,6 +350,7 @@ Redhat
 Reitan
 Renga
 Requin
+Rodas
 Rodionov
 Rohan
 Rolfe
@@ -354,8 +368,10 @@ Sanguinetti
 Sanjay
 Sasselli
 Scharrer
+Schless
 Seitz
 Shahid
+Shahrestani
 Shankar
 Shanshan
 Sharad
@@ -366,6 +382,7 @@ Shi
 Shinkarovsky
 Shinya
 Shirakawa
+Shou
 Shuba
 Shunyao
 Slager
@@ -377,6 +394,7 @@ Solaris
 Solomatnikov
 Solt
 Southwell
+Spack
 Srini
 Srinivasan
 Stamness
@@ -422,6 +440,7 @@ UNOPTFLAT
 Ubixum
 Ueno
 Uints
+Undefine
 Undefines
 Unsized
 Urbach
@@ -518,6 +537,7 @@ basename
 bbox
 benchmarking
 biguint
+bindir
 biops
 bisonpre
 bitOpTree
@@ -587,6 +607,7 @@ datadir
 datafiles
 david
 ddd
+de
 deassign
 debugi
 defenv
@@ -597,7 +618,9 @@ dep
 deparametrized
 der
 dereference
+dereferenced
 desassign
+deserialize
 destructor
 desynchronization
 detections
@@ -635,6 +658,7 @@ elike
 elsif
 endcase
 endcelldefine
+endclass
 endfunction
 endgenerate
 endian
@@ -682,6 +706,7 @@ fno
 fopen
 forceable
 foreach
+fourstate
 fprintf
 fprofile
 fread
@@ -723,6 +748,8 @@ hierCMakeArgs
 hierMkArgs
 hierParameters
 hierVer
+html
+https
 hx
 hyperthreading
 hyperthreads
@@ -771,6 +798,7 @@ libtcmalloc
 libverilated
 linkers
 linter
+linters
 linux
 liu
 livelock
@@ -820,6 +848,7 @@ multithread
 multithreaded
 multithreading
 musl
+mutex
 mutexes
 mux
 muzafferkal
@@ -844,6 +873,7 @@ noprivate
 noreturn
 notif
 nullptr
+numactl
 onehot
 ooo
 oprofile
@@ -867,6 +897,7 @@ phelter
 picoChip
 pinIndex
 pinout
+pkgdatadir
 plusargs
 pmos
 poping
@@ -883,9 +914,11 @@ pre
 precisions
 precompiled
 predefines
+prefetch
 prepareClone
 prepend
 prepended
+preproc
 preprocess
 preprocessed
 preprocessing
@@ -931,6 +964,7 @@ redeclaring
 regs
 reloop
 replaceShiftOp
+reproducibility
 resetall
 respecified
 rodata
@@ -941,6 +975,8 @@ runtime
 runtimes
 rw
 sVerilator
+saif
+sarif
 sawatzke
 sc
 scalared
@@ -999,6 +1035,7 @@ swrite
 synthesizeable
 sys
 systemc
+tcmalloc
 tenghtt
 testbench
 threadsafe
@@ -1020,6 +1057,8 @@ traceEverOn
 tran
 treei
 tri
+triand
+trior
 tristate
 tristates
 trunc
@@ -1033,6 +1072,7 @@ typename
 uint
 un
 unbased
+uncomment
 undef
 undefineall
 undriven
@@ -1072,7 +1112,9 @@ verilator
 verilog
 verilogmod
 verimake
+veriuser
 vl
+vlSelf
 vlopt
 vlt
 vltstd
@@ -1092,9 +1134,11 @@ vpiUndefined
 vpm
 vpp
 warmup
+wavealloca
 waveforms
 whitespace
 widthed
+wor
 wreal
 writeb
 writeme

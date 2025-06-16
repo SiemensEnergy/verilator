@@ -1,4 +1,4 @@
-.. Copyright 2003-2024 by Wilson Snyder.
+.. Copyright 2003-2025 by Wilson Snyder.
 .. SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
 .. _Simulation Runtime Arguments:
@@ -46,6 +46,11 @@ Summary:
 .. option:: +verilator+help
 
    Display help and exit.
+
+.. option:: +verilator+noassert
+
+   Disable assert checking per runtime argument. This is the same as
+   calling :code:`VerilatedContext*->assertOn(false)` in the model.
 
 .. option:: +verilator+prof+exec+file+<filename>
 
@@ -109,11 +114,6 @@ Summary:
    For $random and :vlopt:`--x-initial unique <--x-initial>`, set the
    simulation runtime random seed value.  If zero or not specified picks a
    value from the system random number generator.
-
-.. option:: +verilator+noassert
-
-   Disable assert checking per runtime argument. This is the same as
-   calling :code:`VerilatedContext*->assertOn(false)` in the model.
 
 .. option:: +verilator+V
 

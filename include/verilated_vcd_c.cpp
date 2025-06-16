@@ -3,7 +3,7 @@
 //
 // Code available from: https://verilator.org
 //
-// Copyright 2001-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2001-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -15,9 +15,9 @@
 /// \brief Verilated C++ tracing in VCD format implementation code
 ///
 /// This file must be compiled and linked against all Verilated objects
-/// that use --trace.
+/// that use --trace-vcd.
 ///
-/// Use "verilator --trace" to add this to the Makefile for the linker.
+/// Use "verilator --trace-vcd" to add this to the Makefile for the linker.
 ///
 //=============================================================================
 
@@ -100,6 +100,8 @@ VerilatedVcd::VerilatedVcd(VerilatedVcdFile* filep) {
     m_wrBufp = new char[m_wrChunkSize * 8];
     m_wrFlushp = m_wrBufp + m_wrChunkSize * 6;
     m_writep = m_wrBufp;
+    m_wrTimeBeginp = nullptr;
+    m_wrTimeEndp = nullptr;
 }
 
 void VerilatedVcd::open(const char* filename) VL_MT_SAFE_EXCLUDES(m_mutex) {
@@ -187,10 +189,19 @@ bool VerilatedVcd::preChangeDump() {
 }
 
 void VerilatedVcd::emitTimeChange(uint64_t timeui) {
-    printStr("#");
-    const std::string str = std::to_string(timeui);
-    printStr(str.c_str());
-    printStr("\n");
+    // Remember pointers when last emitted time stamp; if last output was
+    // timestamp backup and overwrite it.
+    // This is faster then checking on every signal change if time needs to
+    // be emitted.  Note buffer flushes may still emit a rare duplicate.
+    if (m_wrTimeBeginp && m_wrTimeEndp == m_writep) m_writep = m_wrTimeBeginp;
+    m_wrTimeBeginp = m_writep;
+    {
+        printStr("#");
+        const std::string str = std::to_string(timeui);
+        printStr(str.c_str());
+        printStr("\n");
+    }
+    m_wrTimeEndp = m_writep;
 }
 
 VerilatedVcd::~VerilatedVcd() {
@@ -257,6 +268,10 @@ void VerilatedVcd::bufferResize(size_t minsize) {
         m_wrBufp = new char[m_wrChunkSize * 8];
         std::memcpy(m_wrBufp, oldbufp, m_writep - oldbufp);
         m_writep = m_wrBufp + (m_writep - oldbufp);
+        if (m_wrTimeBeginp) {
+            m_wrTimeBeginp = m_wrBufp + (m_wrTimeBeginp - oldbufp);
+            m_wrTimeEndp = m_wrBufp + (m_wrTimeEndp - oldbufp);
+        }
         m_wrFlushp = m_wrBufp + m_wrChunkSize * 6;
         VL_DO_CLEAR(delete[] oldbufp, oldbufp = nullptr);
     }
@@ -293,6 +308,8 @@ void VerilatedVcd::bufferFlush() VL_MT_UNSAFE_ONE {
 
     // Reset buffer
     m_writep = m_wrBufp;
+    m_wrTimeBeginp = nullptr;
+    m_wrTimeEndp = nullptr;
 }
 
 //=============================================================================
@@ -305,27 +322,46 @@ void VerilatedVcd::printIndent(int level_change) {
 }
 
 void VerilatedVcd::pushPrefix(const std::string& name, VerilatedTracePrefixType type) {
-    std::string newPrefix = m_prefixStack.back().first + name;
+    assert(!m_prefixStack.empty());  // Constructor makes an empty entry
+    // An empty name means this is the root of a model created with
+    // name()=="".  The tools get upset if we try to pass this as empty, so
+    // we put the signals under a new $rootio scope, but the signals
+    // further down will be peers, not children (as usual for name()!="").
+    const std::string prevPrefix = m_prefixStack.back().first;
+    if (name == "$rootio" && !prevPrefix.empty()) {
+        // Upper has name, we can suppress inserting $rootio, but still push so popPrefix works
+        m_prefixStack.emplace_back(prevPrefix, VerilatedTracePrefixType::ROOTIO_WRAPPER);
+        return;
+    } else if (name.empty()) {
+        m_prefixStack.emplace_back(prevPrefix, VerilatedTracePrefixType::ROOTIO_WRAPPER);
+        return;
+    }
+
+    const std::string newPrefix = prevPrefix + name;
+    bool properScope = false;
     switch (type) {
     case VerilatedTracePrefixType::SCOPE_MODULE:
     case VerilatedTracePrefixType::SCOPE_INTERFACE:
     case VerilatedTracePrefixType::STRUCT_PACKED:
     case VerilatedTracePrefixType::STRUCT_UNPACKED:
     case VerilatedTracePrefixType::UNION_PACKED: {
+        properScope = true;
+        break;
+    }
+    default: break;
+    }
+    if (properScope) {
         printIndent(1);
         printStr("$scope module ");
         const std::string n = lastWord(newPrefix);
         printStr(n.c_str());
         printStr(" $end\n");
-        newPrefix += ' ';
-        break;
     }
-    default: break;
-    }
-    m_prefixStack.emplace_back(newPrefix, type);
+    m_prefixStack.emplace_back(newPrefix + (properScope ? " " : ""), type);
 }
 
 void VerilatedVcd::popPrefix() {
+    assert(!m_prefixStack.empty());
     switch (m_prefixStack.back().second) {
     case VerilatedTracePrefixType::SCOPE_MODULE:
     case VerilatedTracePrefixType::SCOPE_INTERFACE:
@@ -338,7 +374,7 @@ void VerilatedVcd::popPrefix() {
     default: break;
     }
     m_prefixStack.pop_back();
-    assert(!m_prefixStack.empty());
+    assert(!m_prefixStack.empty());  // Always one left, the constructor's initial one
 }
 
 void VerilatedVcd::declare(uint32_t code, const char* name, const char* wirep, bool array,

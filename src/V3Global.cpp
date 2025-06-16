@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2004-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2004-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -24,7 +24,6 @@
 #include "V3HierBlock.h"
 #include "V3LinkCells.h"
 #include "V3Parse.h"
-#include "V3ParseSym.h"
 #include "V3Stats.h"
 #include "V3ThreadPool.h"
 
@@ -54,10 +53,15 @@ void V3Global::readFiles() {
     const VNUser4InUse inuser4;
 
     VInFilter filter{v3Global.opt.pipeFilter()};
-    V3ParseSym parseSyms{v3Global.rootp()};  // Symbol table must be common across all parsing
 
-    V3Parse parser{v3Global.rootp(), &filter, &parseSyms};
+    V3Parse parser{v3Global.rootp(), &filter};
 
+    // Parse the std waivers
+    if (v3Global.opt.stdWaiver()) {
+        parser.parseFile(
+            new FileLine{V3Options::getStdWaiverPath()}, V3Options::getStdWaiverPath(), false,
+            "Cannot find verilated_std_waiver.vlt containing built-in lint waivers: ");
+    }
     // Read .vlt files
     const V3StringSet& vltFiles = v3Global.opt.vltFiles();
     for (const string& filename : vltFiles) {
@@ -66,7 +70,7 @@ void V3Global::readFiles() {
     }
 
     // Parse the std package
-    if (v3Global.opt.std()) {
+    if (v3Global.opt.stdPackage()) {
         parser.parseFile(new FileLine{V3Options::getStdPackagePath()},
                          V3Options::getStdPackagePath(), false,
                          "Cannot find verilated_std.sv containing built-in std:: definitions: ");
@@ -98,10 +102,12 @@ void V3Global::readFiles() {
     // v3Global.rootp()->dumpTreeFile(v3Global.debugFilename("parse.tree"));
     V3Error::abortIfErrors();
 
-    if (!v3Global.opt.preprocOnly()) {
+    if (!v3Global.opt.preprocOnly() || v3Global.opt.preprocResolve()) {
         // Resolve all modules cells refer to
-        V3LinkCells::link(v3Global.rootp(), &filter, &parseSyms);
+        V3LinkCells::link(v3Global.rootp(), &filter);
     }
+
+    V3Global::dumpCheckGlobalTree("cells", false, dumpTreeEitherLevel() >= 9);
 }
 
 void V3Global::removeStd() {
@@ -186,4 +192,20 @@ const std::string& V3Global::ptrToId(const void* p) {
         pair.first->second = os.str();
     }
     return pair.first->second;
+}
+
+std::vector<std::string> V3Global::verilatedCppFiles() {
+    std::vector<std::string> result;
+    result.emplace_back("verilated.cpp");
+    if (v3Global.dpi()) result.emplace_back("verilated_dpi.cpp");
+    if (v3Global.opt.vpi()) result.emplace_back("verilated_vpi.cpp");
+    if (v3Global.opt.savable()) result.emplace_back("verilated_save.cpp");
+    if (v3Global.opt.coverage()) result.emplace_back("verilated_cov.cpp");
+    if (v3Global.opt.trace()) result.emplace_back(v3Global.opt.traceSourceBase() + "_c.cpp");
+    if (v3Global.usesProbDist()) result.emplace_back("verilated_probdist.cpp");
+    if (v3Global.usesTiming()) result.emplace_back("verilated_timing.cpp");
+    if (v3Global.useRandomizeMethods()) result.emplace_back("verilated_random.cpp");
+    result.emplace_back("verilated_threads.cpp");
+    if (v3Global.opt.usesProfiler()) result.emplace_back("verilated_profiler.cpp");
+    return result;
 }

@@ -1,7 +1,7 @@
 # pylint: disable=C0103,C0114,C0116,C0301,E0402,W0622
 #
 # Configuration file for Verilator's Sphinx documentation builder.
-# Copyright 2003-2024 by Wilson Snyder.
+# Copyright 2003-2025 by Wilson Snyder.
 # SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 #
 # This file only contains overridden options. For a full list:
@@ -169,15 +169,7 @@ latex_elements = {
 # Grouping the document tree into LaTeX files. List of tuples
 # (source start file, target name, title,
 #  author, documentclass [howto, manual, or own class]).
-# latex_documents = [
-#    (
-#        master_doc,
-#        "Verilog-to-Routing.tex",
-#        "Verilog-to-Routing Documentation",
-#        "VTR Developers",
-#        "manual",
-#    ),
-# ]
+# latex_documents = [ ... ]
 
 # For "manual" documents, if this is true, then toplevel headings are parts,
 # not chapters.

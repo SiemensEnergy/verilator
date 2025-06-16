@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -64,12 +64,12 @@ public:
 
     void dumpIterate(std::ostream& os, VSymConstMap& doneSymsr, const string& indent,
                      int numLevels, const string& searchName) const {
-        os << indent << "+ " << std::left << std::setw(30)
-           << (searchName == "" ? "\"\"" : searchName) << std::setw(0) << std::right;
+        os << indent << "+ " << std::left << std::setw(30) << ("'"s + searchName + "'"s)
+           << std::setw(0) << std::right;
         os << "  se" << cvtToHex(this) << std::setw(0);
         os << "  fallb=se" << cvtToHex(m_fallbackp);
         if (m_symPrefix != "") os << "  symPrefix=" << m_symPrefix;
-        os << "  n=" << nodep();
+        if (nodep()) os << "  n=" << nodep();
         os << '\n';
         if (VL_UNCOVERABLE(!doneSymsr.insert(this).second)) {
             os << indent << "| ^ duplicate, so no children printed\n";  // LCOV_EXCL_LINE
@@ -119,7 +119,7 @@ public:
     void imported(bool flag) { m_imported = flag; }
     void insert(const string& name, VSymEnt* entp) {
         UINFO(9, "     SymInsert se" << cvtToHex(this) << " '" << name << "' se" << cvtToHex(entp)
-                                     << "  " << entp->nodep() << endl);
+                                     << "  " << entp->nodep());
         if (name != "" && m_idNameMap.find(name) != m_idNameMap.end()) {
             // If didn't already report warning
             if (!V3Error::errorCount()) {  // LCOV_EXCL_START
@@ -135,7 +135,7 @@ public:
         const auto it = m_idNameMap.find(name);
         if (name != "" && it != m_idNameMap.end()) {
             UINFO(9, "     SymReinsert se" << cvtToHex(this) << " '" << name << "' se"
-                                           << cvtToHex(entp) << "  " << entp->nodep() << endl);
+                                           << cvtToHex(entp) << "  " << entp->nodep());
             it->second = entp;  // Replace
         } else {
             insert(name, entp);
@@ -147,10 +147,9 @@ public:
         const auto it = m_idNameMap.find(name);
         UINFO(9, "     SymFind   se"
                      << cvtToHex(this) << " '" << name << "' -> "
-                     << (it == m_idNameMap.end()
-                             ? "NONE"
-                             : "se" + cvtToHex(it->second) + " n=" + cvtToHex(it->second->nodep()))
-                     << endl);
+                     << (it == m_idNameMap.end() ? "NONE"
+                                                 : "se" + cvtToHex(it->second)
+                                                       + " n=" + cvtToHex(it->second->nodep())));
         if (it != m_idNameMap.end()) return (it->second);
         return nullptr;
     }
@@ -242,7 +241,7 @@ public:
     }
     void importFromIface(VSymGraph* graphp, const VSymEnt* srcp, bool onlyUnmodportable = false) {
         // Import interface tokens from source symbol table into this symbol table, recursively
-        UINFO(9, "     importIf  se" << cvtToHex(this) << " from se" << cvtToHex(srcp) << endl);
+        UINFO(9, "     importIf  se" << cvtToHex(this) << " from se" << cvtToHex(srcp));
         for (IdNameMap::const_iterator it = srcp->m_idNameMap.begin();
              it != srcp->m_idNameMap.end(); ++it) {
             const string& name = it->first;
@@ -256,7 +255,7 @@ public:
             }
         }
     }
-    void cellErrorScopes(AstNode* lookp, string prettyName = "") {
+    string cellErrorScopes(AstNode* lookp, string prettyName = "") {
         if (prettyName == "") prettyName = lookp->prettyName();
         string scopes;
         for (IdNameMap::iterator it = m_idNameMap.begin(); it != m_idNameMap.end(); ++it) {
@@ -267,9 +266,9 @@ public:
             }
         }
         if (scopes == "") scopes = "<no instances found>";
-        std::cerr << V3Error::warnMoreStandalone() << "... Known scopes under '" << prettyName
-                  << "': " << scopes << endl;
         if (debug()) dumpSelf(std::cerr, "       KnownScope: ", 1);
+        return V3Error::warnMore() + "... Known scopes under '" + prettyName + "': " + scopes
+               + '\n';
     }
 };
 
@@ -317,9 +316,9 @@ public:
     void dumpFilePrefixed(const string& nameComment) {
         if (dumpTreeLevel()) {
             const string filename = v3Global.debugFilename(nameComment) + ".txt";
-            UINFO(2, "Dumping " << filename << endl);
+            UINFO(2, "Dumping " << filename);
             const std::unique_ptr<std::ofstream> logp{V3File::new_ofstream(filename)};
-            if (logp->fail()) v3fatal("Can't write " << filename);
+            if (logp->fail()) v3fatal("Can't write file: " << filename);
             dumpSelf(*logp, "");
         }
     }

@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -40,7 +40,7 @@ class ClassVisitor final : public VNVisitor {
     const VNUser1InUse m_inuser1;
 
     // MEMBERS
-    string m_prefix;  // String prefix to add to name based on hier
+    string m_prefix;  // String prefix to add to class name based on hier
     V3UniqueNames m_names;  // For unique naming of structs and unions
     AstNodeModule* m_modp = nullptr;  // Current module
     AstNodeModule* m_classPackagep = nullptr;  // Package moving into
@@ -129,24 +129,20 @@ class ClassVisitor final : public VNVisitor {
         VL_RESTORER(m_classScopep);
         VL_RESTORER(m_packageScopep);
         VL_RESTORER(m_modp);
-        {
-            m_modp = nodep;
-            m_classPackagep = packagep;
-            m_classScopep = classScopep;
-            m_packageScopep = scopep;
-            m_prefix = nodep->name() + "__02e";  // .
-            iterateChildren(nodep);
-        }
+        m_modp = nodep;
+        m_classPackagep = packagep;
+        m_classScopep = classScopep;
+        m_packageScopep = scopep;
+        m_prefix = nodep->name() + "__02e";  // .
+        iterateChildren(nodep);
     }
     void visit(AstNodeModule* nodep) override {
         // Visit for NodeModules that are not AstClass (AstClass is-a AstNodeModule)
         VL_RESTORER(m_prefix);
         VL_RESTORER(m_modp);
-        {
-            m_modp = nodep;
-            m_prefix = nodep->name() + "__03a__03a";  // ::
-            iterateChildren(nodep);
-        }
+        m_modp = nodep;
+        m_prefix = nodep->name() + "__03a__03a";  // ::
+        iterateChildren(nodep);
     }
 
     void visit(AstVar* nodep) override {
@@ -174,12 +170,10 @@ class ClassVisitor final : public VNVisitor {
 
     void visit(AstNodeFTask* nodep) override {
         VL_RESTORER(m_ftaskp);
-        {
-            m_ftaskp = nodep;
-            iterateChildren(nodep);
-            if (m_packageScopep && nodep->isStatic()) {
-                m_toScopeMoves.emplace_back(nodep, m_packageScopep);
-            }
+        m_ftaskp = nodep;
+        iterateChildren(nodep);
+        if (m_packageScopep && nodep->isStatic()) {
+            m_toScopeMoves.emplace_back(nodep, m_packageScopep);
         }
     }
     void visit(AstCFunc* nodep) override {
@@ -214,7 +208,7 @@ class ClassVisitor final : public VNVisitor {
             m_names.get(dtypep->name() + (VN_IS(dtypep, UnionDType) ? "__union" : "__struct")));
         if (dtypep->packed()) m_strDtypeps.insert(dtypep);
 
-        for (const AstMemberDType* itemp = dtypep->membersp(); itemp;
+        for (AstMemberDType* itemp = dtypep->membersp(); itemp;
              itemp = VN_AS(itemp->nextp(), MemberDType)) {
             AstNodeUOrStructDType* const subp = itemp->getChildStructp();
             // Recurse only into anonymous structs inside this definition,
@@ -249,7 +243,7 @@ public:
         for (auto moved : m_toScopeMoves) {
             AstNode* const nodep = moved.first;
             AstScope* const scopep = moved.second;
-            UINFO(9, "moving " << nodep << " to " << scopep << endl);
+            UINFO(9, "moving " << nodep << " to " << scopep);
             if (VN_IS(nodep, NodeFTask)) {
                 scopep->addBlocksp(nodep->unlinkFrBack());
             } else if (VN_IS(nodep, Var)) {
@@ -267,7 +261,7 @@ public:
         for (auto moved : m_toPackageMoves) {
             AstNode* const nodep = moved.first;
             AstNodeModule* const modp = moved.second;
-            UINFO(9, "moving " << nodep << " to " << modp << endl);
+            UINFO(9, "moving " << nodep << " to " << modp);
             nodep->unlinkFrBack();
             modp->addStmtsp(nodep);
         }
@@ -277,7 +271,7 @@ public:
             AstNodeUOrStructDType* const dtypep = m_pubStrDtypeps.front();
             m_pubStrDtypeps.pop();
             if (pubStrDtypeps.insert(dtypep).second) {
-                for (const AstMemberDType* itemp = dtypep->membersp(); itemp;
+                for (AstMemberDType* itemp = dtypep->membersp(); itemp;
                      itemp = VN_AS(itemp->nextp(), MemberDType)) {
                     if (AstNodeUOrStructDType* const subp = itemp->getChildStructp())
                         m_pubStrDtypeps.push(subp);
@@ -300,7 +294,7 @@ public:
 // Class class functions
 
 void V3Class::classAll(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     { ClassVisitor{nodep}; }  // Destruct before checking
     V3Global::dumpCheckGlobalTree("class", 0, dumpTreeEitherLevel() >= 3);
 }

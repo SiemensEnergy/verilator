@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -31,7 +31,7 @@
 
 #include "V3Clock.h"
 
-#include "V3Sched.h"
+#include "V3Const.h"
 
 VL_DEFINE_DEBUG_FUNCTIONS;
 
@@ -68,8 +68,9 @@ public:
 
 class ClockVisitor final : public VNVisitor {
     // NODE STATE
+
     // STATE
-    AstCFunc* m_evalp = nullptr;  // The '_eval' function
+    AstCFunc* const m_evalp = nullptr;  // The '_eval' function
     AstSenTree* m_lastSenp = nullptr;  // Last sensitivity match, so we can detect duplicates.
     AstIf* m_lastIfp = nullptr;  // Last sensitivity if active to add more under
 
@@ -96,7 +97,7 @@ class ClockVisitor final : public VNVisitor {
     }
     // VISITORS
     void visit(AstCoverToggle* nodep) override {
-        // nodep->dumpTree("-  ct: ");
+        // if (debug()) nodep->dumpTree("-  ct: ");
         // COVERTOGGLE(INC, ORIG, CHANGE) ->
         //   IF(ORIG ^ CHANGE) { INC; CHANGE = ORIG; }
         AstNode* const incp = nodep->incp()->unlinkFrBack();
@@ -174,8 +175,13 @@ class ClockVisitor final : public VNVisitor {
 
 public:
     // CONSTRUCTORS
-    explicit ClockVisitor(AstNetlist* netlistp) {
-        m_evalp = netlistp->evalp();
+    explicit ClockVisitor(AstNetlist* netlistp)
+        : m_evalp{netlistp->evalp()} {
+        // Simplify all SenTrees
+        for (AstSenTree* senTreep = netlistp->topScopep()->senTreesp(); senTreep;
+             senTreep = VN_AS(senTreep->nextp(), SenTree)) {
+            V3Const::constifyExpensiveEdit(senTreep);
+        }
         iterate(netlistp);
     }
     ~ClockVisitor() override = default;
@@ -185,7 +191,7 @@ public:
 // Clock class functions
 
 void V3Clock::clockAll(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     { ClockVisitor{nodep}; }  // Destruct before checking
     V3Global::dumpCheckGlobalTree("clock", 0, dumpTreeEitherLevel() >= 3);
 }

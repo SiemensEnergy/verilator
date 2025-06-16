@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -34,7 +34,7 @@ VL_DEFINE_DEBUG_FUNCTIONS;
 std::vector<AstActive*> V3Order::createSerial(OrderGraph& graph, const std::string& tag,
                                               const TrigToSenMap& trigToSen, bool slow) {
 
-    UINFO(2, "  Constructing serial code for '" + tag + "'\n");
+    UINFO(2, "  Constructing serial code for '" + tag + "'");
 
     // Build the move graph
     OrderMoveDomScope::clear();

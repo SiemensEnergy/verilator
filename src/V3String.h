@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -33,20 +33,20 @@
 //######################################################################
 // Global string-related functions
 
-template <class T>
+template <typename T>
 std::string cvtToStr(const T& t) VL_PURE {
     std::ostringstream os;
     os << t;
     return os.str();
 }
-template <class T>
+template <typename T>
 typename std::enable_if<std::is_pointer<T>::value, std::string>::type
 cvtToHex(const T tp) VL_PURE {
     std::ostringstream os;
     os << static_cast<const void*>(tp);
     return os.str();
 }
-template <class T>
+template <typename T>
 typename std::enable_if<std::is_integral<T>::value, std::string>::type cvtToHex(const T t) {
     std::ostringstream os;
     os << std::hex << std::setw(sizeof(T) * 8 / 4) << std::setfill('0') << t;
@@ -94,11 +94,13 @@ public:
     // Convert string to upper case (toupper)
     static string upcase(const string& str) VL_PURE;
     // Insert esc just before tgt
-    static string quoteAny(const string& str, char tgt, char esc);
+    static string quoteAny(const string& str, char tgt, char esc) VL_PURE;
     // Replace any \'s with \\  (two consecutive backslashes)
-    static string quoteBackslash(const string& str) { return quoteAny(str, '\\', '\\'); }
+    static string quoteBackslash(const string& str) VL_PURE { return quoteAny(str, '\\', '\\'); }
     // Replace any %'s with %%
-    static string quotePercent(const string& str) { return quoteAny(str, '%', '%'); }
+    static string quotePercent(const string& str) VL_PURE { return quoteAny(str, '%', '%'); }
+    // Replace any %%'s with %
+    static string dequotePercent(const string& str);
     // Surround a raw string by double quote and escape if necessary
     // e.g. input abc's  becomes "\"abc\'s\""
     static string escapeStringForPath(const string& str);
@@ -114,12 +116,20 @@ public:
     static string spaceUnprintable(const string& str) VL_PURE;
     // Remove any whitespace
     static string removeWhitespace(const string& str);
+    // Trim leading/trailing whitespace on each line
+    static string trimWhitespace(const string& str);
+    // Return true if only identifer or ""
+    static bool isIdentifier(const string& str);
+    // Return true if char is valid character in C identifiers
+    static bool isIdentifierChar(char c) { return isalnum(c) || c == '_'; }
     // Return true if only whitespace or ""
     static bool isWhitespace(const string& str);
     // Return number of spaces/tabs leading in string
     static string::size_type leadingWhitespaceCount(const string& str);
     // Return double by parsing string
     static double parseDouble(const string& str, bool* successp);
+    // Replace substring. Often replaceWord is more appropriate.
+    static string replaceSubstr(const string& str, const string& from, const string& to);
     // Replace all occurrences of the word 'from' in 'str' with 'to'. A word is considered
     // to be a consecutive sequence of the characters [a-zA-Z0-9_]. Sub-words are not replaced.
     // e.g.: replaceWords("one apple bad_apple", "apple", "banana") -> "one banana bad_apple"
@@ -128,11 +138,11 @@ public:
     static bool startsWith(const string& str, const string& prefix);
     // Predicate to check if 'str' ends with 'suffix'
     static bool endsWith(const string& str, const string& suffix);
-    // Return true if char is valid character in word
-    static bool isWordChar(char c) { return isalnum(c) || c == '_'; }
     // Return proper article (a/an) for a word. May be inaccurate for some special words
     static string aOrAn(const char* word);
     static string aOrAn(const string& word) { return aOrAn(word.c_str()); }
+    // Hash the string
+    static uint64_t hashMurmur(const string& str) VL_PURE;
 };
 
 //######################################################################

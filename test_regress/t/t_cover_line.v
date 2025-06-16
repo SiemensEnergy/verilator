@@ -43,6 +43,14 @@ module t (/*AUTOARG*/
              // Inputs
              .clk                       (clk),
              .toggle                    (toggle));
+   tab tab1 (/*AUTOINST*/
+             // Inputs
+             .clk                       (clk));
+   par par1 (/*AUTOINST*/);
+   cond cond1 (/*AUTOINST*/
+               // Inputs
+               .clk                     (clk),
+               .cyc                     (cyc));
 
    always @ (posedge clk) begin
       if (cyc!=0) begin
@@ -130,11 +138,11 @@ module alpha (/*AUTOARG*/
    input clk;
    input toggle;
    always @ (posedge clk) begin
-      if (toggle) begin  // CHECK_COVER(0,"top.t.a*",2)
+      if (toggle) begin  // CHECK_COVER(0,"top.t.a*",18)
          $write("");
          // t.a1 and t.a2 collapse to a count of 2
       end
-      if (toggle) begin
+      if (toggle) begin  // *** t_cover_line.vlt turns this off
          $write("");  // CHECK_COVER_MISSING(0)
          // This doesn't even get added
 `ifdef ATTRIBUTE
@@ -168,7 +176,7 @@ module beta (/*AUTOARG*/
 `ifdef ATTRIBUTE
          // verilator coverage_block_off
 `endif
-         begin end  // Needed for .vlt to attach coverage_block_off
+         begin end  // *** t_cover_line.vlt turns this off (so need begin/end)
          if (1) begin end  // CHECK_COVER_MISSING(0)
          $write("");  // CHECK_COVER_MISSING(0)
       end
@@ -189,7 +197,7 @@ class Cls;
       end
    endfunction
    function void fauto();
-      if (m_toggle) begin  // CHECK_COVER(0,"top.$unit::Cls",1)
+      if (m_toggle) begin  // CHECK_COVER(0,"top.$unit::Cls",11)
          $write("");
       end
    endfunction
@@ -224,7 +232,6 @@ module tsk (/*AUTOARG*/
          Cls::fstatic(1'b1);
       end
    endtask
-
 endmodule
 
 module off (/*AUTOARG*/
@@ -249,5 +256,108 @@ module off (/*AUTOARG*/
          if (0) ;  // CHECK_COVER(0,"top.t.o1",1)
       end
    end
+endmodule
 
+module tab (input clk);
+   bit [3:0] cyc4;
+   int decoded;
+
+   always @ (posedge clk) begin
+      case (cyc4)
+        1: decoded = 10;
+        2: decoded = 20;
+        3: decoded = 30;
+        4: decoded = 40;
+        5: decoded = 50;
+        default: decoded = 0;
+      endcase
+   end
+
+   always @ (posedge clk) begin
+      cyc4 <= cyc4 + 1;
+   end
+endmodule
+
+module par();
+   localparam int CALLS_FUNC = param_func(1);
+
+   // We don't currently count elaboration time use towards coverage.  This
+   // seems safer for functions used both at elaboration time and not - but may
+   // revisit this.
+   function automatic int param_func(int i);
+      if (i == 0) begin
+         i = 99; // Uncovered
+      end
+      else begin
+         i = i + 1;
+      end
+      return i;
+   endfunction
+
+endmodule
+
+package my_pkg;
+   int x = 1 ? 1 : 0;
+endpackage
+
+class Getter1;
+   function int get_1;
+      return 1;
+   endfunction
+endclass
+
+module cond(input logic clk, input int cyc);
+   logic a, b, c, d, e, f, g, h, k, l, m;
+   logic [5:0] tab;
+   typedef logic [7:0] arr_t[1:0];
+   arr_t data[1:0];
+   Getter1 getter1 = new;
+   string s;
+
+   function logic func_side_effect;
+      $display("SIDE EFFECT");
+      return 1;
+   endfunction
+
+   function arr_t get_arr;
+      arr_t arr;
+      return arr;
+   endfunction
+
+   assign a = (cyc == 0) ? clk : 1'bz;
+   assign b = (cyc == 1) ? clk : 0;
+   assign c = func_side_effect() ? clk : 0;
+   always @(posedge clk) begin
+      d = (cyc % 3 == 0) ? 1 : 0;
+      s = (getter1.get_1() == 0) ? "abcd" : $sformatf("%d", getter1.get_1()[4:0]);
+   end
+   assign e = (cyc % 3 == 1) ? (clk ? 1 : 0) : 1;
+
+   // ternary operator in condition shouldn't be included to the coverae
+   assign f = (cyc != 0 ? 1 : 0) ? 1 : 0;
+   // the same as in index
+   assign tab[clk ? 1 : 0] = 1;
+   assign m = tab[clk ? 3 : 4];
+
+   for (genvar i = 0; i < 2; i++) begin
+      assign g = clk ? 1 : 0;
+   end
+
+   always begin
+      if (cyc == 5) h = cyc > 5 ? 1 : 0;
+      else h = 1;
+
+      data[0] = (cyc == 2) ? '{8'h01, 8'h02} : get_arr();
+
+      // ternary operator in conditions should be skipped
+      for (int i = 0; (i < 5) ? 1 : 0; i++) begin
+         k = 1'(i);
+      end
+      for (int i = 0; i < 7; i = (i > 4) ? i + 1 : i + 2) begin
+         k = 1'(i);
+      end
+
+      if (k ? 1 : 0) k = 1;
+      else k = 0;
+   end
 endmodule

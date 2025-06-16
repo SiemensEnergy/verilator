@@ -3,7 +3,7 @@
 //
 // Code available from: https://verilator.org
 //
-// Copyright 2012-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2012-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -30,17 +30,9 @@
 #include <atomic>
 #include <condition_variable>
 #include <set>
+#include <stack>
 #include <thread>
 #include <vector>
-
-// clang-format off
-#if defined(__linux)
-# include <sched.h>  // For sched_getcpu()
-#endif
-#if defined(__APPLE__) && !defined(__arm64__)
-# include <cpuid.h>  // For __cpuid_count()
-#endif
-// clang-format on
 
 class VlExecutionProfiler;
 class VlThreadPool;
@@ -155,16 +147,20 @@ private:
 
     VL_UNCOPYABLE(VlWorkerThread);
 
+protected:
+    friend class VlThreadPool;
+    const std::thread& cthread() const { return m_cthread; }
+
 public:
     // CONSTRUCTORS
     explicit VlWorkerThread(VerilatedContext* contextp);
     ~VlWorkerThread();
 
     // METHODS
-    template <bool SpinWait>
+    template <bool N_SpinWait>
     void dequeWork(ExecRec* workp) VL_MT_SAFE_EXCLUDES(m_mutex) {
         // Spin for a while, waiting for new data
-        if VL_CONSTEXPR_CXX17 (SpinWait) {
+        if VL_CONSTEXPR_CXX17 (N_SpinWait) {
             for (unsigned i = 0; i < VL_LOCK_SPINS; ++i) {
                 if (VL_LIKELY(m_ready_size.load(std::memory_order_relaxed))) break;
                 VL_CPU_RELAX();
@@ -205,6 +201,13 @@ class VlThreadPool final : public VerilatedVirtualBase {
     // MEMBERS
     std::vector<VlWorkerThread*> m_workers;  // our workers
 
+    mutable VerilatedMutex m_mutex;  // Guards indexes of unassigned workers
+    // Indexes of unassigned workers
+    std::stack<size_t> m_unassignedWorkers VL_GUARDED_BY(m_mutex);
+    // For sequentially generating task IDs to avoid shadowing
+    std::atomic<unsigned> m_assignedTasks{0};
+    std::string m_numaStatus;  // Status of NUMA assignment
+
 public:
     // CONSTRUCTORS
     // Construct a thread pool with 'nThreads' dedicated threads. The thread
@@ -214,7 +217,21 @@ public:
     ~VlThreadPool() override;
 
     // METHODS
+    size_t assignWorkerIndex() {
+        const VerilatedLockGuard lock{m_mutex};
+        assert(!m_unassignedWorkers.empty());
+        const size_t index = m_unassignedWorkers.top();
+        m_unassignedWorkers.pop();
+        return index;
+    }
+    void freeWorkerIndexes(std::vector<size_t>& indexes) {
+        const VerilatedLockGuard lock{m_mutex};
+        for (size_t index : indexes) m_unassignedWorkers.push(index);
+        indexes.clear();
+    }
+    unsigned assignTaskIndex() { return m_assignedTasks++; }
     int numThreads() const { return static_cast<int>(m_workers.size()); }
+    std::string numaStatus() const { return m_numaStatus; }
     VlWorkerThread* workerp(int index) {
         assert(index >= 0);
         assert(index < static_cast<int>(m_workers.size()));
@@ -223,6 +240,9 @@ public:
 
 private:
     VL_UNCOPYABLE(VlThreadPool);
+
+    static bool isNumactlRunning();
+    std::string numaAssign();
 };
 
 #endif

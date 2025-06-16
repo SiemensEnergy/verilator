@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -80,7 +80,7 @@ private:
         return savedCount;
     }
     void endVisitBase(uint32_t savedCount, AstNode* nodep) {
-        UINFO(8, "cost " << std::setw(6) << std::left << m_stackSize << "  " << nodep << endl);
+        UINFO(8, "cost " << std::setw(6) << std::left << m_stackSize << "  " << nodep);
         if (!m_ignoreRemaining) m_stackSize += savedCount;
     }
 
@@ -91,13 +91,13 @@ private:
         iterateAndNextConstNull(nodep->condp());
         const uint32_t savedCount = m_stackSize;
 
-        UINFO(8, "thensp:\n");
+        UINFO(8, "thensp:");
         reset();
         iterateAndNextConstNull(nodep->thensp());
         uint32_t ifCount = m_stackSize;
         if (nodep->branchPred().unlikely()) ifCount = 0;
 
-        UINFO(8, "elsesp:\n");
+        UINFO(8, "elsesp:");
         reset();
         iterateAndNextConstNull(nodep->elsesp());
         uint32_t elseCount = m_stackSize;
@@ -120,12 +120,12 @@ private:
         iterateAndNextConstNull(nodep->condp());
         const uint32_t savedCount = m_stackSize;
 
-        UINFO(8, "?\n");
+        UINFO(8, "?");
         reset();
         iterateAndNextConstNull(nodep->thenp());
         const uint32_t ifCount = m_stackSize;
 
-        UINFO(8, ":\n");
+        UINFO(8, ":");
         reset();
         iterateAndNextConstNull(nodep->elsep());
         const uint32_t elseCount = m_stackSize;

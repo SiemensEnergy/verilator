@@ -1,4 +1,4 @@
-.. Copyright 2003-2024 by Wilson Snyder.
+.. Copyright 2003-2025 by Wilson Snyder.
 .. SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
 verilator_gantt
@@ -51,6 +51,10 @@ predicted_parallelism
 cpu#_thread
   For the given CPU number, the thread number measured to be executing.
 
+cpu#_waiting
+  For the given CPU number, aggregated waiting time for mtask dependencies.
+  Visualized as `X` values.
+
 mtask#_cpu
   For the given mtask id, the CPU it was measured to execute on.
 
@@ -62,6 +66,17 @@ predicted_thread#_mtask
   executing.
 
 
+verilator_gantt Example Usage
+-----------------------------
+
+..
+
+    verilator_gantt --help
+    verilator_gantt --version
+
+    verilator_gantt profile_exec.dat
+
+
 verilator_gantt Arguments
 -------------------------
 
@@ -69,16 +84,16 @@ verilator_gantt Arguments
 
 .. option:: <filename>
 
-The filename to read data from; the default is "profile_exec.dat".
+   The filename to read data from; the default is "profile_exec.dat".
 
 .. option:: --help
 
-Displays a help summary, the program version, and exits.
+   Displays a help summary, the program version, and exits.
 
 .. option:: --no-vcd
 
-Disables creating a .vcd file.
+   Disables creating a .vcd file.
 
 .. option:: --vcd <filename>
 
-Sets the output filename for vcd dump; the default is "verilator_gantt.vcd".
+   Sets the output filename for vcd dump; the default is "verilator_gantt.vcd".

@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -26,7 +26,6 @@
 class AstNetlist;
 class VInFilter;
 class V3ParseImp;
-class V3ParseSym;
 
 //============================================================================
 
@@ -38,7 +37,7 @@ class V3Parse final {
 
 public:
     // We must allow reading multiple files into one parser
-    V3Parse(AstNetlist* rootp, VInFilter* filterp, V3ParseSym* symp) VL_MT_DISABLED;
+    V3Parse(AstNetlist* rootp, VInFilter* filterp) VL_MT_DISABLED;
     ~V3Parse() VL_MT_DISABLED;
 
     // METHODS

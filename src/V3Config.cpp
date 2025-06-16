@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2010-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2010-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -117,6 +117,70 @@ public:
 };
 
 using V3ConfigVarResolver = V3ConfigWildcardResolver<V3ConfigVar>;
+
+//======================================================================
+
+class WildcardContents final {
+    // Not mutex protected, current calling from V3Config::waive is protected by error's mutex
+    // MEMBERS
+    std::map<const std::string, bool> m_mapPatterns;  // Pattern match results
+    std::deque<string> m_lines;  // Source text lines
+
+    // METHODS
+    static WildcardContents& s() {  // Singleton
+        static WildcardContents s_s;
+        return s_s;
+    }
+    void clearCacheImp() { m_mapPatterns.clear(); }
+    void pushTextImp(const string& text) {
+        // Similar code in VFileContent::pushText()
+        // Any leftover text is stored on largest line (might be "")
+        const string leftover = m_lines.back() + text;
+        m_lines.pop_back();
+
+        // Insert line-by-line
+        string::size_type line_start = 0;
+        while (true) {
+            const string::size_type line_end = leftover.find('\n', line_start);
+            if (line_end != string::npos) {
+                const string oneline(leftover, line_start, line_end - line_start + 1);
+                if (oneline.size() > 1) m_lines.push_back(oneline);  // Keeps newline
+                UINFO(9, "Push[+" << (m_lines.size() - 1) << "]: " << oneline);
+                line_start = line_end + 1;
+            } else {
+                break;
+            }
+        }
+        // Keep leftover for next time
+        m_lines.emplace_back(string(leftover, line_start));  // Might be ""
+        clearCacheImp();
+    }
+
+    bool resolveUncachedImp(const string& name) {
+        for (const string& i : m_lines) {
+            if (VString::wildmatch(i, name)) return true;
+        }
+        return false;
+    }
+    bool resolveCachedImp(const string& name) {
+        // Lookup if it was resolved before, typically is
+        const auto pair = m_mapPatterns.emplace(name, false);
+        bool& entryr = pair.first->second;
+        // Resolve entry when first requested, cache the result
+        if (pair.second) entryr = resolveUncachedImp(name);
+        return entryr;
+    }
+
+public:
+    WildcardContents() {
+        m_lines.emplace_back("");  // start with no leftover
+    }
+    ~WildcardContents() = default;
+    // Return true iff name in parsed contents
+    static bool resolve(const string& name) { return s().resolveCachedImp(name); }
+    // Add arbitrary text (need not be line-by-line)
+    static void pushText(const string& text) { s().pushTextImp(text); }
+};
 
 //######################################################################
 // Function or task: Have variables and properties
@@ -256,11 +320,28 @@ std::ostream& operator<<(std::ostream& os, const V3ConfigIgnoresLine& rhs) {
 // and multiple attributes can be attached to a line
 using V3ConfigLineAttribute = std::bitset<VPragmaType::ENUM_SIZE>;
 
+class WaiverSetting final {
+public:
+    V3ErrorCode m_code;  // Error code
+    string m_contents;  // --contents regexp
+    string m_match;  // --match regexp
+    WaiverSetting(V3ErrorCode code, const string& contents, const string& match)
+        : m_code{code}
+        , m_contents{contents}
+        , m_match{match} {}
+    ~WaiverSetting() = default;
+    WaiverSetting& operator=(const WaiverSetting& rhs) {
+        m_code = rhs.m_code;
+        m_contents = rhs.m_contents;
+        m_match = rhs.m_match;
+        return *this;
+    }
+};
+
 // File entity
 class V3ConfigFile final {
     using LineAttrMap = std::map<int, V3ConfigLineAttribute>;  // Map line->bitset of attributes
     using IgnLines = std::multiset<V3ConfigIgnoresLine>;  // list of {line,code,on}
-    using WaiverSetting = std::pair<V3ErrorCode, std::string>;  // Waive code if string matches
     using Waivers = std::vector<WaiverSetting>;  // List of {code,wildcard string}
 
     LineAttrMap m_lineAttrs;  // Attributes to line mapping
@@ -299,8 +380,12 @@ public:
         m_ignLines.insert(V3ConfigIgnoresLine{code, lineno, on});
         m_lastIgnore.it = m_ignLines.begin();
     }
-    void addIgnoreMatch(V3ErrorCode code, const string& match) {
-        m_waivers.emplace_back(code, match);
+    void addIgnoreMatch(V3ErrorCode code, const string& contents, const string& match) {
+        // Since Verilator 5.031 the error message compared has context, so
+        // allow old rules to still match using a final '*'
+        string newMatch = match;
+        if (newMatch.empty() || newMatch.back() != '*') newMatch += '*';
+        m_waivers.emplace_back(WaiverSetting{code, contents, newMatch});
     }
 
     void applyBlock(AstNodeBlock* nodep) {
@@ -319,17 +404,17 @@ public:
     void applyIgnores(FileLine* filelinep) {
         // HOT routine, called each parsed token line of this filename
         if (m_lastIgnore.lineno != filelinep->lineno()) {
-            // UINFO(9, "   ApplyIgnores for " << filelinep->ascii() << endl);
+            // UINFO(9, "   ApplyIgnores for " << filelinep->ascii());
             // Process all on/offs for lines up to and including the current line
             const int curlineno = filelinep->lastLineno();
             for (; m_lastIgnore.it != m_ignLines.end(); ++m_lastIgnore.it) {
                 if (m_lastIgnore.it->m_lineno > curlineno) break;
-                // UINFO(9, "     Hit " << *m_lastIgnore.it << endl);
+                // UINFO(9, "     Hit " << *m_lastIgnore.it);
                 filelinep->warnOn(m_lastIgnore.it->m_code, m_lastIgnore.it->m_on);
             }
             if (false && debug() >= 9) {
                 for (IgnLines::const_iterator it = m_lastIgnore.it; it != m_ignLines.end(); ++it) {
-                    UINFO(9, "     NXT " << *it << endl);
+                    UINFO(9, "     NXT " << *it);
                 }
             }
             m_lastIgnore.lineno = filelinep->lastLineno();
@@ -338,8 +423,9 @@ public:
     bool waive(V3ErrorCode code, const string& match) {
         if (code.hardError()) return false;
         for (const auto& itr : m_waivers) {
-            if ((code.isUnder(itr.first) || (itr.first == V3ErrorCode::I_LINT))
-                && VString::wildmatch(match, itr.second)) {
+            if ((code.isUnder(itr.m_code) || (itr.m_code == V3ErrorCode::I_LINT))
+                && VString::wildmatch(match, itr.m_match)
+                && WildcardContents::resolve(itr.m_contents)) {
                 return true;
             }
         }
@@ -394,7 +480,7 @@ class V3ConfigScopeTraceResolver final {
 public:
     void addScopeTraceOn(bool on, const string& scope, int levels) {
         UINFO(9, "addScopeTraceOn " << on << " '" << scope << "' "
-                                    << " levels=" << levels << endl);
+                                    << " levels=" << levels);
         m_entries.emplace_back(V3ConfigScopeTraceEntry{scope, on, levels});
         m_matchCache.clear();
     }
@@ -413,7 +499,7 @@ public:
         for (const auto& ch : scope) {
             if (ch == '.') ++maxLevel;
         }
-        UINFO(9, "getScopeTraceOn " << scope << " maxLevel=" << maxLevel << endl);
+        UINFO(9, "getScopeTraceOn " << scope << " maxLevel=" << maxLevel);
 
         bool enabled = true;
         for (const auto& ent : m_entries) {
@@ -432,7 +518,7 @@ public:
                     UINFO(9, "getScopeTraceOn-part " << scope << " enabled=" << enabled
                                                      << " @ lev=" << partLevel
                                                      << (levelMatch ? "[match]" : "[miss]")
-                                                     << " from scopepart=" << scopepart << endl);
+                                                     << " from scopepart=" << scopepart);
                     break;
                 }
                 if (partEnd == scope.length()) break;
@@ -446,12 +532,27 @@ public:
 //######################################################################
 // Resolve modules and files in the design
 
+class V3ConfigResolverHierWorkerEntry final {
+    const int m_workers;
+    FileLine* const m_flp;
+
+public:
+    explicit V3ConfigResolverHierWorkerEntry(int workers, FileLine* flp)
+        : m_workers{workers}
+        , m_flp{flp} {}
+    int workers() const { return m_workers; }
+    FileLine* flp() const { return m_flp; }
+};
+
 class V3ConfigResolver final {
+    enum ProfileDataMode : uint8_t { NONE = 0, MTASK = 1, HIER_DPI = 2 };
     V3ConfigModuleResolver m_modules;  // Access to module names (with wildcards)
     V3ConfigFileResolver m_files;  // Access to file names (with wildcards)
     V3ConfigScopeTraceResolver m_scopeTraces;  // Regexp to trace enables
     std::unordered_map<string, std::unordered_map<string, uint64_t>>
         m_profileData;  // Access to profile_data records
+    uint8_t m_mode = NONE;
+    std::unordered_map<string, V3ConfigResolverHierWorkerEntry> m_hierWorkers;
     FileLine* m_profileFileLine = nullptr;
 
     V3ConfigResolver() = default;
@@ -466,10 +567,34 @@ public:
     V3ConfigFileResolver& files() { return m_files; }
     V3ConfigScopeTraceResolver& scopeTraces() { return m_scopeTraces; }
 
-    void addProfileData(FileLine* fl, const string& model, const string& key, uint64_t cost) {
+    void addProfileData(FileLine* fl, const string& hierDpi, uint64_t cost) {
+        // Empty key for hierarchical DPI wrapper costs.
+        addProfileData(fl, hierDpi, "", cost, HIER_DPI);
+    }
+    void addProfileData(FileLine* fl, const string& model, const string& key, uint64_t cost,
+                        ProfileDataMode mode = MTASK) {
         if (!m_profileFileLine) m_profileFileLine = fl;
         if (cost == 0) cost = 1;  // Cost 0 means delete (or no data)
         m_profileData[model][key] += cost;
+        m_mode |= mode;
+    }
+    bool containsMTaskProfileData() const { return m_mode & MTASK; }
+    uint64_t getProfileData(const string& hierDpi) const {
+        // Empty key for hierarchical DPI wrapper costs.
+        return getProfileData(hierDpi, "");
+    }
+    void addHierWorkers(FileLine* flp, const string& model, int workers) {
+        m_hierWorkers.emplace(std::piecewise_construct, std::forward_as_tuple(model),
+                              std::forward_as_tuple(workers, flp));
+    }
+    int getHierWorkers(const string& model) const {
+        const auto mit = m_hierWorkers.find(model);
+        // Assign a single worker if no specified.
+        return mit != m_hierWorkers.cend() ? mit->second.workers() : 0;
+    }
+    FileLine* getHierWorkersFileLine(const string& model) const {
+        const auto mit = m_hierWorkers.find(model);
+        return mit != m_hierWorkers.cend() ? mit->second.flp() : v3Global.rootp()->fileline();
     }
     uint64_t getProfileData(const string& model, const string& key) const {
         const auto mit = m_profileData.find(model);
@@ -503,6 +628,10 @@ void V3Config::addCoverageBlockOff(const string& module, const string& blockname
     V3ConfigResolver::s().modules().at(module).addCoverageBlockOff(blockname);
 }
 
+void V3Config::addHierWorkers(FileLine* fl, const string& model, int workers) {
+    V3ConfigResolver::s().addHierWorkers(fl, model, workers);
+}
+
 void V3Config::addIgnore(V3ErrorCode code, bool on, const string& filename, int min, int max) {
     if (filename == "*") {
         FileLine::globalWarnOff(code, !on);
@@ -512,8 +641,9 @@ void V3Config::addIgnore(V3ErrorCode code, bool on, const string& filename, int 
     }
 }
 
-void V3Config::addIgnoreMatch(V3ErrorCode code, const string& filename, const string& match) {
-    V3ConfigResolver::s().files().at(filename).addIgnoreMatch(code, match);
+void V3Config::addIgnoreMatch(V3ErrorCode code, const string& filename, const string& contents,
+                              const string& match) {
+    V3ConfigResolver::s().files().at(filename).addIgnoreMatch(code, contents, match);
 }
 
 void V3Config::addInline(FileLine* fl, const string& module, const string& ftask, bool on) {
@@ -530,6 +660,10 @@ void V3Config::addInline(FileLine* fl, const string& module, const string& ftask
 
 void V3Config::addModulePragma(const string& module, VPragmaType pragma) {
     V3ConfigResolver::s().modules().at(module).addModulePragma(pragma);
+}
+
+void V3Config::addProfileData(FileLine* fl, const string& hierDpi, uint64_t cost) {
+    V3ConfigResolver::s().addProfileData(fl, hierDpi, cost);
 }
 
 void V3Config::addProfileData(FileLine* fl, const string& model, const string& key,
@@ -637,6 +771,15 @@ void V3Config::applyVarAttr(AstNodeModule* modulep, AstNodeFTask* ftaskp, AstVar
     if (vp) vp->apply(varp);
 }
 
+int V3Config::getHierWorkers(const string& model) {
+    return V3ConfigResolver::s().getHierWorkers(model);
+}
+FileLine* V3Config::getHierWorkersFileLine(const string& model) {
+    return V3ConfigResolver::s().getHierWorkersFileLine(model);
+}
+uint64_t V3Config::getProfileData(const string& hierDpi) {
+    return V3ConfigResolver::s().getProfileData(hierDpi);
+}
 uint64_t V3Config::getProfileData(const string& model, const string& key) {
     return V3ConfigResolver::s().getProfileData(model, key);
 }
@@ -645,6 +788,12 @@ FileLine* V3Config::getProfileDataFileLine() {
 }
 bool V3Config::getScopeTraceOn(const string& scope) {
     return V3ConfigResolver::s().scopeTraces().getScopeTraceOn(scope);
+}
+
+void V3Config::contentsPushText(const string& text) { return WildcardContents::pushText(text); }
+
+bool V3Config::containsMTaskProfileData() {
+    return V3ConfigResolver::s().containsMTaskProfileData();
 }
 
 bool V3Config::waive(FileLine* filelinep, V3ErrorCode code, const string& message) {

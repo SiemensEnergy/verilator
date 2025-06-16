@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -73,7 +73,7 @@ public:
 
 private:
     // MEMBERS
-    string m_name;  //< Name of the source file
+    const string m_name;  //< Name of the source file
     LinenoMap m_lines;  //< Map of each annotated line
     bool m_needed = false;  //< Need to annotate; has low coverage
 

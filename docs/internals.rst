@@ -1470,7 +1470,7 @@ Preparing to Run Tests
 
 For all tests to pass, you must install the following packages:
 
--  SystemC to compile the SystemC outputs, see http://systemc.org
+-  SystemC to compile the SystemC outputs, see https://systemc.org
 
 -  vcddiff to find differences in VCD outputs. See the readme at
    https://github.com/veripool/vcddiff
@@ -1633,7 +1633,7 @@ scaled so it can be more useful with large graphs.
 
 For interactive graph viewing consider `xdot
 <https://github.com/jrfonseca/xdot.py>`__ or `ZGRViewer
-<http://zvtm.sourceforge.net/zgrviewer.html>`__. If you know of better
+<https://zvtm.sourceforge.net/zgrviewer.html>`__. If you know of better
 viewers (especially for large graphs) please let us know.
 
 
@@ -1656,7 +1656,7 @@ field in the section below.
 +---------------+--------------------------------------------------------+
 | ``1:2:``      | The hierarchy of the ``VAR`` is the ``op2p``           |
 |               | pointer under the ``MODULE``, which in turn is the     |
-|               | ``op1p`` pointer under the ``NETLIST``                 |
+|               | ``op1p`` pointer under the ``NETLIST``.                |
 +---------------+--------------------------------------------------------+
 | ``VAR``       | The AstNodeType (e.g. ``AstVar``).                     |
 +---------------+--------------------------------------------------------+
@@ -1670,7 +1670,7 @@ field in the section below.
 |               | and "aa" the 27th. Then line 22 in that file, then     |
 |               | column 8 (aa=0, az=25, ba=26, ...).                    |
 +---------------+--------------------------------------------------------+
-| ``@dt=0x...`` | The address of the data type this node contains.       |
+| ``@dt=0x...`` | The address of the data type this node references.     |
 +---------------+--------------------------------------------------------+
 | ``w32``       | The data-type width() is 32 bits.                      |
 +---------------+--------------------------------------------------------+
@@ -1678,7 +1678,7 @@ field in the section below.
 |               | variable.                                              |
 +---------------+--------------------------------------------------------+
 | ``[O]``       | Flags which vary with the type of node, in this        |
-|               | case, it means the variable is an output.              |
+|               | case of a VAR, it means the variable is an output.     |
 +---------------+--------------------------------------------------------+
 
 In more detail, the following fields are dumped common to all nodes. They
@@ -1903,7 +1903,7 @@ find what made a <e#*#*> line in the tree dumps):
 
 ::
 
-   watch AstNode::s_editCntGbl==####
+   watch AstNode::s_editCntGbl=####
 
 Then, when the watch fires, to break at every following change to that
 node:
@@ -2046,6 +2046,11 @@ driver.py Non-Scenario Arguments
   Same as ``verilator --debugi level``: Set Verilator internal debugging
   level globally to the specified debug level (1-10).
 
+--driver-clean
+  After a test passes, remove the generated objects.  Reduces storage
+  requirements, but may result in longer runtime if the tests are run
+  again.
+
 --dump-tree
   Same as ``verilator --dump-tree``: Enable Verilator writing .tree debug
   files with dumping level 3, which dumps the standard critical stages.
@@ -2077,7 +2082,10 @@ driver.py Non-Scenario Arguments
 
 --j #
   Run number of parallel tests, or 0 to determine the count based on the
-  number of cores installed.  Requires Perl's Parallel::Forker package.
+  number of cores installed.
+
+--obj-suffix <name>
+  Append the argument to the name of the ``test_regress/obj_`` directories.
 
 --quiet
   Suppress all output except for failures and progress messages every 15
@@ -2350,11 +2358,6 @@ check_finished
   string ``*-* All Finished *-*`` being printed on standard output. This is
   the normal way for successful tests to finish.
 
-expect
-  A quoted list of strings or regular expression to be matched in the
-  output. See `Hints On Writing Tests` for more detail on how this argument
-  should be used.
-
 fails
   True to indicate this step is expected to fail.  Tests that are expected
   to fail generally have _bad in their filename.
@@ -2416,7 +2419,7 @@ xsim_flags / xsim_flags2 / xsim_run_flags
 Distribution
 ============
 
-Copyright 2008-2024 by Wilson Snyder. Verilator is free software; you can
+Copyright 2008-2025 by Wilson Snyder. Verilator is free software; you can
 redistribute it and/or modify it under the terms of either the GNU Lesser
 General Public License Version 3 or the Perl Artistic License Version 2.0.
 

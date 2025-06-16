@@ -1,0 +1,6 @@
+%Error: t/t_enum_base_bad.v:13:12: Enum type must be an integer atom or vector type (IEEE 1800-2023 6.19)
+                                 : ... note: In instance 't'
+   13 |    typedef enum s_t {
+      |            ^~~~
+        ... See the manual at https://verilator.org/verilator_doc.html?v=latest for more assistance.
+%Error: Exiting due to

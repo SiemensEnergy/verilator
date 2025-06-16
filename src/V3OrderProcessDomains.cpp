@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -38,9 +38,6 @@ class V3OrderProcessDomains final {
 
     // STATE
     OrderGraph& m_graph;  // The ordering graph
-
-    // Map from Trigger reference AstSenItem to the original AstSenTree
-    const V3Order::TrigToSenMap& m_trigToSen;
 
     // This is a function provided by the invoker of the ordering that can provide additional
     // sensitivity expression that when triggered indicates the passed AstVarScope might have
@@ -88,13 +85,13 @@ class V3OrderProcessDomains final {
     //     else, if all inputs are from flops, it's end-of-sequential code
     //     else, it's full combo code
     void processDomains() {
-        UINFO(2, "  Domains...\n");
+        UINFO(2, "  Domains...");
         // Buffer to hold external sensitivities
         std::vector<AstSenTree*> externalDomainps;
         // For each vertex
         for (V3GraphVertex& it : m_graph.vertices()) {
             OrderEitherVertex* const vtxp = it.as<OrderEitherVertex>();
-            UINFO(5, "    pdi: " << vtxp << endl);
+            UINFO(5, "    pdi: " << vtxp);
             // Sequential logic already has its domain set
             if (vtxp->domainp()) continue;
 
@@ -102,7 +99,7 @@ class V3OrderProcessDomains final {
             // For logic, start with the explicit hybrid sensitivities
             OrderLogicVertex* const lvtxp = vtxp->cast<OrderLogicVertex>();
             if (lvtxp) domainp = lvtxp->hybridp();
-            if (domainp) UINFO(6, "      hybr d=" << debugDomain(domainp) << " " << vtxp << endl);
+            if (domainp) UINFO(6, "      hybr d=" << debugDomain(domainp) << " " << vtxp);
 
             // For each incoming edge, examine the source vertex
             for (V3GraphEdge& edge : vtxp->inEdges()) {
@@ -114,7 +111,7 @@ class V3OrderProcessDomains final {
 
                 AstSenTree* fromDomainp = fromVtxp->domainp();
 
-                UINFO(6, "      from d=" << debugDomain(fromDomainp) << " " << fromVtxp << endl);
+                UINFO(6, "      from d=" << debugDomain(fromDomainp) << " " << fromVtxp);
                 UASSERT(fromDomainp == m_deleteDomainp || !fromDomainp->hasCombo(),
                         "There should be no need for combinational domains");
 
@@ -125,7 +122,7 @@ class V3OrderProcessDomains final {
                     m_externalDomains(vscp, externalDomainps);
                     for (AstSenTree* const externalDomainp : externalDomainps) {
                         UINFO(6, "      xtrn d=" << debugDomain(externalDomainp) << " " << fromVtxp
-                                                 << " because of " << vscp << endl);
+                                                 << " because of " << vscp);
                         UASSERT_OBJ(!externalDomainp->hasCombo(), vscp,
                                     "There should be no need for combinational domains");
                         fromDomainp = combineDomains(fromDomainp, externalDomainp);
@@ -153,7 +150,7 @@ class V3OrderProcessDomains final {
             // Set the domain of the vertex
             vtxp->domainp(domainp);
 
-            UINFO(5, "      done d=" << debugDomain(domainp) << " " << vtxp << endl);
+            UINFO(5, "      done d=" << debugDomain(domainp) << " " << vtxp);
         }
     }
 
@@ -161,14 +158,9 @@ class V3OrderProcessDomains final {
         // Make report of all signal names and what clock edges they have
         const string filename = v3Global.debugFilename(m_tag + "_order_edges.txt");
         const std::unique_ptr<std::ofstream> logp{V3File::new_ofstream(filename)};
-        if (logp->fail()) v3fatal("Can't write " << filename);
+        if (logp->fail()) v3fatal("Can't write file: " << filename);
 
         std::deque<string> report;
-
-        // Rebuild the trigger to original AstSenTree map using equality key comparison, as
-        // merging domains have created new AstSenTree instances which are not in the map
-        std::unordered_map<VNRef<const AstSenItem>, const AstSenTree*> trigToSen;
-        for (const auto& pair : m_trigToSen) trigToSen.emplace(*pair.first, pair.second);
 
         for (V3GraphVertex& vtx : m_graph.vertices()) {
             if (OrderVarVertex* const vvertexp = vtx.cast<OrderVarVertex>()) {
@@ -190,12 +182,7 @@ class V3OrderProcessDomains final {
                     for (AstSenItem* senItemp = senTreep->sensesp(); senItemp;
                          senItemp = VN_AS(senItemp->nextp(), SenItem)) {
                         if (senItemp != senTreep->sensesp()) os << " or ";
-                        const auto it = trigToSen.find(*senItemp);
-                        if (it != trigToSen.end()) {
-                            V3EmitV::verilogForTree(it->second, os);
-                        } else {
-                            V3EmitV::verilogForTree(senItemp, os);
-                        }
+                        V3EmitV::verilogForTree(senItemp, os);
                     }
                 }
                 report.push_back(os.str());
@@ -209,10 +196,8 @@ class V3OrderProcessDomains final {
 
     // CONSTRUCTOR
     V3OrderProcessDomains(AstNetlist* netlistp, OrderGraph& graph, const string& tag,
-                          const V3Order::TrigToSenMap& trigToSen,
                           const V3Order::ExternalDomainsProvider& externalDomains)
         : m_graph{graph}
-        , m_trigToSen{trigToSen}
         , m_externalDomains{externalDomains}
         , m_finder{netlistp}
         , m_tag{tag} {
@@ -238,16 +223,14 @@ class V3OrderProcessDomains final {
 public:
     // Order the logic
     static void apply(AstNetlist* netlistp, OrderGraph& graph, const string& tag,
-                      const V3Order::TrigToSenMap& trigToSen,
                       const V3Order::ExternalDomainsProvider& externalDomains) {
-        V3OrderProcessDomains{netlistp, graph, tag, trigToSen, externalDomains};
+        V3OrderProcessDomains{netlistp, graph, tag, externalDomains};
     }
 };
 
 void V3Order::processDomains(AstNetlist* netlistp,  //
                              OrderGraph& graph,  //
                              const std::string& tag,  //
-                             const V3Order::TrigToSenMap& trigToSen,  //
                              const ExternalDomainsProvider& externalDomains) {
-    V3OrderProcessDomains::apply(netlistp, graph, tag, trigToSen, externalDomains);
+    V3OrderProcessDomains::apply(netlistp, graph, tag, externalDomains);
 }

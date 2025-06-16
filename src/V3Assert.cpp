@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2005-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2005-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -143,7 +143,7 @@ class AssertVisitor final : public VNVisitor {
         }
     }
     AstSampled* newSampledExpr(AstNodeExpr* nodep) {
-        const auto sampledp = new AstSampled{nodep->fileline(), nodep};
+        AstSampled* const sampledp = new AstSampled{nodep->fileline(), nodep};
         sampledp->dtypeFrom(nodep);
         return sampledp;
     }
@@ -153,7 +153,7 @@ class AssertVisitor final : public VNVisitor {
                                           nodep->findUInt64DType()};
             v3Global.rootp()->dollarUnitPkgAddp()->addStmtsp(m_monitorNumVarp);
         }
-        const auto varrefp = new AstVarRef{nodep->fileline(), m_monitorNumVarp, access};
+        AstVarRef* const varrefp = new AstVarRef{nodep->fileline(), m_monitorNumVarp, access};
         varrefp->classOrPackagep(v3Global.rootp()->dollarUnitPkgAddp());
         return varrefp;
     }
@@ -163,7 +163,7 @@ class AssertVisitor final : public VNVisitor {
                                           nodep->findBitDType()};
             v3Global.rootp()->dollarUnitPkgAddp()->addStmtsp(m_monitorOffVarp);
         }
-        const auto varrefp = new AstVarRef{nodep->fileline(), m_monitorOffVarp, access};
+        AstVarRef* const varrefp = new AstVarRef{nodep->fileline(), m_monitorOffVarp, access};
         varrefp->classOrPackagep(v3Global.rootp()->dollarUnitPkgAddp());
         return varrefp;
     }
@@ -510,10 +510,8 @@ class AssertVisitor final : public VNVisitor {
     // Don't sample sensitivities
     void visit(AstSenItem* nodep) override {
         VL_RESTORER(m_inSampled);
-        {
-            m_inSampled = false;
-            iterateChildren(nodep);
-        }
+        m_inSampled = false;
+        iterateChildren(nodep);
     }
 
     //========== Statements
@@ -530,14 +528,15 @@ class AssertVisitor final : public VNVisitor {
             replaceDisplay(nodep, "%%Fatal");
         } else if (nodep->displayType() == VDisplayType::DT_MONITOR) {
             nodep->displayType(VDisplayType::DT_DISPLAY);
-            const auto fl = nodep->fileline();
+            FileLine* const fl = nodep->fileline();
             AstNode* monExprsp = nodep->fmtp()->exprsp();
             AstSenItem* monSenItemsp = nullptr;
             while (monExprsp) {
                 if (AstNodeVarRef* varrefp = VN_CAST(monExprsp, NodeVarRef)) {
                     AstSenItem* const senItemp
-                        = new AstSenItem(fl, VEdgeType::ET_CHANGED,
-                                         new AstVarRef{fl, varrefp->varp(), VAccess::READ});
+                        = new AstSenItem{fl, VEdgeType::ET_CHANGED,
+                                         // Clone so get VarRef or VarXRef as needed
+                                         varrefp->cloneTree(false)};
                     if (!monSenItemsp) {
                         monSenItemsp = senItemp;
                     } else {
@@ -549,8 +548,8 @@ class AssertVisitor final : public VNVisitor {
             AstSenTree* const monSenTree = new AstSenTree{fl, monSenItemsp};
             const auto monNum = ++m_monitorNum;
             // Where $monitor was we do "__VmonitorNum = N;"
-            const auto newsetp = new AstAssign{fl, newMonitorNumVarRefp(nodep, VAccess::WRITE),
-                                               new AstConst{fl, monNum}};
+            AstAssign* const newsetp = new AstAssign{
+                fl, newMonitorNumVarRefp(nodep, VAccess::WRITE), new AstConst{fl, monNum}};
             nodep->replaceWith(newsetp);
             // Add "always_comb if (__VmonitorOn && __VmonitorNum==N) $display(...);"
             AstNode* const stmtsp = nodep;
@@ -567,14 +566,14 @@ class AssertVisitor final : public VNVisitor {
         } else if (nodep->displayType() == VDisplayType::DT_STROBE) {
             nodep->displayType(VDisplayType::DT_DISPLAY);
             // Need one-shot
-            const auto fl = nodep->fileline();
-            const auto varp
+            FileLine* const fl = nodep->fileline();
+            AstVar* const varp
                 = new AstVar{fl, VVarType::MODULETEMP, "__Vstrobe" + cvtToStr(m_modStrobeNum++),
                              nodep->findBitDType()};
             m_modp->addStmtsp(varp);
             // Where $strobe was we do "__Vstrobe = '1;"
-            const auto newsetp = new AstAssign{fl, new AstVarRef{fl, varp, VAccess::WRITE},
-                                               new AstConst{fl, AstConst::BitTrue{}}};
+            AstAssign* const newsetp = new AstAssign{fl, new AstVarRef{fl, varp, VAccess::WRITE},
+                                                     new AstConst{fl, AstConst::BitTrue{}}};
             nodep->replaceWith(newsetp);
             // Add "always_comb if (__Vstrobe) begin $display(...); __Vstrobe = '0; end"
             AstNode* const stmtsp = nodep;
@@ -588,7 +587,7 @@ class AssertVisitor final : public VNVisitor {
         }
     }
     void visit(AstMonitorOff* nodep) override {
-        const auto newp
+        AstAssign* const newp
             = new AstAssign{nodep->fileline(), newMonitorOffVarRefp(nodep, VAccess::WRITE),
                             new AstConst{nodep->fileline(), AstConst::BitTrue{}, nodep->off()}};
         nodep->replaceWith(newp);
@@ -636,7 +635,7 @@ class AssertVisitor final : public VNVisitor {
         FileLine* const fl = nodep->fileline();
         switch (nodep->ctlType()) {
         case VAssertCtlType::ON:
-            UINFO(9, "Generating assertctl for a module: " << m_modp << endl);
+            UINFO(9, "Generating assertctl for a module: " << m_modp);
             nodep->replaceWith(new AstCExpr{
                 fl,
                 "vlSymsp->_vm_contextp__->assertOnSet("s + std::to_string(nodep->ctlAssertTypes())
@@ -645,7 +644,7 @@ class AssertVisitor final : public VNVisitor {
             break;
         case VAssertCtlType::OFF:
         case VAssertCtlType::KILL: {
-            UINFO(9, "Generating assertctl for a module: " << m_modp << endl);
+            UINFO(9, "Generating assertctl for a module: " << m_modp);
             nodep->replaceWith(new AstCExpr{fl,
                                             "vlSymsp->_vm_contextp__->assertOnClear("s
                                                 + std::to_string(nodep->ctlAssertTypes()) + " ,"s
@@ -691,12 +690,10 @@ class AssertVisitor final : public VNVisitor {
         VL_RESTORER(m_modp);
         VL_RESTORER(m_modPastNum);
         VL_RESTORER(m_modStrobeNum);
-        {
-            m_modp = nodep;
-            m_modPastNum = 0;
-            m_modStrobeNum = 0;
-            iterateChildren(nodep);
-        }
+        m_modp = nodep;
+        m_modPastNum = 0;
+        m_modStrobeNum = 0;
+        iterateChildren(nodep);
     }
     void visit(AstNodeProcedure* nodep) override {
         VL_RESTORER(m_procedurep);
@@ -707,10 +704,8 @@ class AssertVisitor final : public VNVisitor {
         // This code is needed rather than a visitor in V3Begin,
         // because V3Assert is called before V3Begin
         VL_RESTORER(m_beginp);
-        {
-            m_beginp = nodep;
-            iterateChildren(nodep);
-        }
+        m_beginp = nodep;
+        iterateChildren(nodep);
     }
 
     void visit(AstNode* nodep) override { iterateChildren(nodep); }
@@ -730,7 +725,7 @@ public:
 // Top Assert class
 
 void V3Assert::assertAll(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     { AssertVisitor{nodep}; }  // Destruct before checking
     V3Global::dumpCheckGlobalTree("assert", 0, dumpTreeEitherLevel() >= 3);
 }

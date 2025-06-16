@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -43,7 +43,7 @@ class LinkCellsGraph final : public V3Graph {
 public:
     LinkCellsGraph() = default;
     ~LinkCellsGraph() override = default;
-    void loopsMessageCb(V3GraphVertex* vertexp) override;
+    void loopsMessageCb(V3GraphVertex* vertexp, V3EdgeFuncP edgeFuncp) override;
 };
 
 class LinkCellsVertex final : public V3GraphVertex {
@@ -56,7 +56,7 @@ public:
         , m_modp{modp} {}
     ~LinkCellsVertex() override = default;
     AstNodeModule* modp() const VL_MT_STABLE { return m_modp; }
-    string name() const override VL_MT_STABLE { return modp()->name(); }
+    string name() const override VL_MT_STABLE { return cvtToHex(modp()) + ' ' + modp()->name(); }
     FileLine* fileline() const override { return modp()->fileline(); }
     // Recursive modules get space for maximum recursion
     uint32_t rankAdder() const override {
@@ -73,7 +73,7 @@ public:
     string name() const override VL_MT_STABLE { return "*LIBRARY*"; }
 };
 
-void LinkCellsGraph::loopsMessageCb(V3GraphVertex* vertexp) {
+void LinkCellsGraph::loopsMessageCb(V3GraphVertex* vertexp, V3EdgeFuncP edgeFuncp) {
     if (const LinkCellsVertex* const vvertexp = vertexp->cast<LinkCellsVertex>()) {
         vvertexp->modp()->v3warn(E_UNSUPPORTED,
                                  "Unsupported: Recursive multiple modules (module instantiates "
@@ -105,10 +105,10 @@ class LinkCellsVisitor final : public VNVisitor {
 
     // STATE
     VInFilter* const m_filterp;  // Parser filter
-    V3ParseSym* m_parseSymp;  // Parser symbol table
 
     // Below state needs to be preserved between each module call.
     AstNodeModule* m_modp = nullptr;  // Current module
+    AstVar* m_varp = nullptr;  // Current variable
     VSymGraph m_mods;  // Symbol table of all module names
     LinkCellsGraph m_graph;  // Linked graph of all cell interconnects
     LibraryVertex* m_libVertexp = nullptr;  // Vertex at root of all libraries
@@ -123,14 +123,14 @@ class LinkCellsVisitor final : public VNVisitor {
         if (!nodep->user1p()) nodep->user1p(new LinkCellsVertex{&m_graph, nodep});
         return nodep->user1u().toGraphVertex();
     }
+    void newEdge(V3GraphVertex* fromp, V3GraphVertex* top, int weight, bool cuttable) {
+        const V3GraphEdge* const edgep = new V3GraphEdge{&m_graph, fromp, top, weight, cuttable};
+        UINFO(9, "    newEdge " << edgep << " " << fromp->name() << " -> " << top->name());
+    }
 
     AstNodeModule* findModuleSym(const string& modName) {
         const VSymEnt* const foundp = m_mods.rootp()->findIdFallback(modName);
-        if (!foundp) {
-            return nullptr;
-        } else {
-            return VN_AS(foundp->nodep(), NodeModule);
-        }
+        return foundp ? VN_AS(foundp->nodep(), NodeModule) : nullptr;
     }
 
     AstNodeModule* resolveModule(AstNode* nodep, const string& modName) {
@@ -140,7 +140,7 @@ class LinkCellsVisitor final : public VNVisitor {
             // If file not found, make AstNotFoundModule, rather than error out.
             // We'll throw the error when we know the module will really be needed.
             const string prettyName = AstNode::prettyName(modName);
-            V3Parse parser{v3Global.rootp(), m_filterp, m_parseSymp};
+            V3Parse parser{v3Global.rootp(), m_filterp};
             // true below -> other simulators treat modules in link-found files as library cells
             parser.parseFile(nodep->fileline(), prettyName, true, "");
             V3Error::abortIfErrors();
@@ -157,7 +157,7 @@ class LinkCellsVisitor final : public VNVisitor {
         return modp;
     }
 
-    // VISITs
+    // VISITORS
     void visit(AstNetlist* nodep) override {
         readModNames();
         iterateChildren(nodep);
@@ -183,10 +183,10 @@ class LinkCellsVisitor final : public VNVisitor {
         VL_RESTORER(m_modp);
         {
             // For nested modules/classes, child below parent
-            if (m_modp) new V3GraphEdge{&m_graph, vertex(m_modp), vertex(nodep), 1};
+            if (m_modp) newEdge(vertex(m_modp), vertex(nodep), 1, false);
             //
             m_modp = nodep;
-            UINFO(4, "Link Module: " << nodep << endl);
+            UINFO(4, "Link Module: " << nodep);
             if (nodep->fileline()->filebasenameNoExt() != nodep->prettyName()
                 && !v3Global.opt.isLibraryFile(nodep->fileline()->filename())
                 && !VN_IS(nodep, NotFoundModule) && !nodep->recursiveClone()
@@ -207,7 +207,7 @@ class LinkCellsVisitor final : public VNVisitor {
             const bool topMatch = (v3Global.opt.topModule() == nodep->prettyName());
             if (topMatch) {
                 m_topVertexp = vertex(nodep);
-                UINFO(2, "Link --top-module: " << nodep << endl);
+                UINFO(2, "Link --top-module: " << nodep);
                 nodep->inLibrary(false);  // Safer to make sure it doesn't disappear
             }
             if (v3Global.opt.topModule() == "" ? nodep->inLibrary()  // Library cells are lower
@@ -215,7 +215,7 @@ class LinkCellsVisitor final : public VNVisitor {
                 // Put under a fake vertex so that the graph ranking won't indicate
                 // this is a top level module
                 if (!m_libVertexp) m_libVertexp = new LibraryVertex{&m_graph};
-                new V3GraphEdge{&m_graph, m_libVertexp, vertex(nodep), 1, false};
+                newEdge(m_libVertexp, vertex(nodep), 1, false);
             }
             // Note AstBind also has iteration on cells
             iterateChildren(nodep);
@@ -225,18 +225,22 @@ class LinkCellsVisitor final : public VNVisitor {
 
     void visit(AstIfaceRefDType* nodep) override {
         // Cell: Resolve its filename.  If necessary, parse it.
-        UINFO(4, "Link IfaceRef: " << nodep << endl);
+        UINFO(4, "Link IfaceRef: " << nodep);
         // Use findIdUpward instead of findIdFlat; it doesn't matter for now
         // but we might support modules-under-modules someday.
         AstNodeModule* const modp = resolveModule(nodep, nodep->ifaceName());
         if (modp) {
             if (VN_IS(modp, Iface)) {
                 // Track module depths, so can sort list from parent down to children
-                new V3GraphEdge{&m_graph, vertex(m_modp), vertex(modp), 1, false};
+                if (!nodep->isVirtual()) newEdge(vertex(m_modp), vertex(modp), 1, false);
                 if (!nodep->cellp()) nodep->ifacep(VN_AS(modp, Iface));
             } else if (VN_IS(modp, NotFoundModule)) {  // Will error out later
             } else {
-                nodep->v3error("Non-interface used as an interface: " << nodep->prettyNameQ());
+                nodep->v3error("Non-interface used as an interface: "
+                               << nodep->ifaceNameQ() << "\n"
+                               << nodep->warnMore()
+                                      + "... Perhaps intended an instantiation but "
+                                        "are missing parenthesis (IEEE 1800-2023 23.3.2)?");
             }
         }
         iterateChildren(nodep);
@@ -244,14 +248,38 @@ class LinkCellsVisitor final : public VNVisitor {
             pinp->param(true);
             if (pinp->name() == "") pinp->name("__paramNumber" + cvtToStr(pinp->pinNum()));
         }
+        // Parser didn't know what was interface, resolve now
+        // For historical reasons virtual interface reference variables remain VARs
+        if (m_varp && !nodep->isVirtual()) m_varp->setIfaceRef();
         // Note cannot do modport resolution here; modports are allowed underneath generates
+        UINFO(4, "Link IfaceRef done: " << nodep);
     }
 
+    void visit(AstPackageExport* nodep) override {
+        // Package Import: We need to do the package before the use of a package
+        iterateChildren(nodep);
+        if (!nodep->packagep()) {
+            AstNodeModule* const modp = resolveModule(nodep, nodep->pkgName());
+            if (AstPackage* const pkgp = VN_CAST(modp, Package)) nodep->packagep(pkgp);
+            if (!nodep->packagep()) {
+                nodep->v3error("Export package not found: " << nodep->prettyPkgNameQ());
+                return;
+            }
+        }
+    }
     void visit(AstPackageImport* nodep) override {
         // Package Import: We need to do the package before the use of a package
         iterateChildren(nodep);
-        UASSERT_OBJ(nodep->packagep(), nodep, "Unlinked package");  // Parser should set packagep
-        new V3GraphEdge{&m_graph, vertex(m_modp), vertex(nodep->packagep()), 1, false};
+        if (!nodep->packagep()) {
+            AstNodeModule* const modp = resolveModule(nodep, nodep->pkgName());
+            if (AstPackage* const pkgp = VN_CAST(modp, Package)) nodep->packagep(pkgp);
+            // If not found, V3LinkDot will report errors
+            if (!nodep->packagep()) {
+                nodep->v3error("Import package not found: " << nodep->prettyPkgNameQ());
+                return;
+            }
+        }
+        newEdge(vertex(m_modp), vertex(nodep->packagep()), 1, false);
     }
 
     void visit(AstBind* nodep) override {
@@ -260,18 +288,16 @@ class LinkCellsVisitor final : public VNVisitor {
         // TODO this doesn't allow bind to dotted hier names, that would require
         // this move to post param, which would mean we do not auto-read modules
         // and means we cannot compute module levels until later.
-        UINFO(4, "Link Bind: " << nodep << endl);
+        UINFO(4, "Link Bind: " << nodep);
         AstNodeModule* const modp = resolveModule(nodep, nodep->name());
         if (modp) {
             AstNode* const cellsp = nodep->cellsp()->unlinkFrBackWithNext();
             // Module may have already linked, so need to pick up these new cells
             VL_RESTORER(m_modp);
-            {
-                m_modp = modp;
-                // Important that this adds to end, as next iterate assumes does all cells
-                modp->addStmtsp(cellsp);
-                iterateAndNextNull(cellsp);
-            }
+            m_modp = modp;
+            // Important that this adds to end, as next iterate assumes does all cells
+            modp->addStmtsp(cellsp);
+            iterateAndNextNull(cellsp);
         }
         VL_DO_DANGLING(pushDeletep(nodep->unlinkFrBack()), nodep);
     }
@@ -296,13 +322,13 @@ class LinkCellsVisitor final : public VNVisitor {
         nodep->user1p(m_modp);
         //
         if (!nodep->modp() || cloned) {
-            UINFO(4, "Link Cell: " << nodep << endl);
+            UINFO(4, "Link Cell: " << nodep);
             // Use findIdFallback instead of findIdFlat; it doesn't matter for now
             // but we might support modules-under-modules someday.
             AstNodeModule* cellmodp = resolveModule(nodep, nodep->modName());
             if (cellmodp) {
                 if (cellmodp == m_modp || cellmodp->user2p() == m_modp) {
-                    UINFO(1, "Self-recursive module " << cellmodp << endl);
+                    UINFO(1, "Self-recursive module " << cellmodp);
                     cellmodp->recursive(true);
                     nodep->recursive(true);
                     if (!cellmodp->recursiveClone()) {
@@ -323,8 +349,7 @@ class LinkCellsVisitor final : public VNVisitor {
                             // user1 etc will retain its pre-clone value
                             cellmodp->user2p(otherModp);
                             v3Global.rootp()->addModulesp(otherModp);
-                            new V3GraphEdge{&m_graph, vertex(cellmodp), vertex(otherModp), 1,
-                                            false};
+                            newEdge(vertex(cellmodp), vertex(otherModp), 1, false);
                         }
                         cellmodp = otherModp;
                         nodep->modp(cellmodp);
@@ -337,7 +362,7 @@ class LinkCellsVisitor final : public VNVisitor {
                 } else {  // Non-recursive
                     // Track module depths, so can sort list from parent down to children
                     nodep->modp(cellmodp);
-                    new V3GraphEdge{&m_graph, vertex(m_modp), vertex(cellmodp), 1, false};
+                    newEdge(vertex(m_modp), vertex(cellmodp), 1, false);
                 }
             }
         }
@@ -384,10 +409,10 @@ class LinkCellsVisitor final : public VNVisitor {
                 if (!pinp->exprp()) {
                     if (pinp->name().substr(0, 11) == "__pinNumber") {
                         pinp->v3warn(PINNOCONNECT,
-                                     "Cell pin is not connected: " << pinp->prettyNameQ());
+                                     "Instance pin is not connected: " << pinp->prettyNameQ());
                     } else {
                         pinp->v3warn(PINCONNECTEMPTY,
-                                     "Cell pin connected by name with empty reference: "
+                                     "Instance pin connected by name with empty reference: "
                                          << pinp->prettyNameQ());
                     }
                 }
@@ -402,7 +427,7 @@ class LinkCellsVisitor final : public VNVisitor {
                     if (ports.find(portp->name()) == ports.end()
                         && ports.find("__pinNumber" + cvtToStr(portp->pinNum())) == ports.end()) {
                         if (pinStar) {
-                            UINFO(9, "    need .* PORT  " << portp << endl);
+                            UINFO(9, "    need .* PORT  " << portp);
                             // Create any not already connected
                             AstPin* const newp = new AstPin{
                                 nodep->fileline(), 0, portp->name(),
@@ -445,7 +470,7 @@ class LinkCellsVisitor final : public VNVisitor {
                                 nodep->addPinsp(newp);
                             } else {
                                 nodep->v3warn(PINMISSING,
-                                              "Cell has missing pin: "
+                                              "Instance has missing pin: "
                                                   << portp->prettyNameQ() << '\n'
                                                   << nodep->warnContextPrimary() << '\n'
                                                   << portp->warnOther()
@@ -473,10 +498,10 @@ class LinkCellsVisitor final : public VNVisitor {
                 AstIfaceRefDType* const idtypep = new AstIfaceRefDType{
                     nodep->fileline(), nodep->name(), nodep->modp()->name()};
                 idtypep->ifacep(nullptr);  // cellp overrides
-                // In the case of arrayed interfaces, we replace cellp when de-arraying in V3Inst
                 idtypep->cellp(nodep);  // Only set when real parent cell known.
                 AstVar* varp;
                 if (nodep->rangep()) {
+                    // For arrayed interfaces, we replace cellp when de-arraying in V3Inst
                     AstNodeArrayDType* const arrp
                         = new AstUnpackArrayDType{nodep->fileline(), VFlagChildDType{}, idtypep,
                                                   nodep->rangep()->cloneTree(true)};
@@ -490,17 +515,11 @@ class LinkCellsVisitor final : public VNVisitor {
                 nodep->addNextHere(varp);
                 nodep->hasIfaceVar(true);
             }
-            if (nodep->hasNoParens()) {
-                nodep->v3error("Interface instantiation "
-                               << nodep->prettyNameQ() << " requires parenthesis\n"
-                               << nodep->warnMore() << "... Suggest use '" << nodep->prettyName()
-                               << "()'");
-            }
         }
         if (nodep->modp()) {  //
             iterateChildren(nodep);
         }
-        UINFO(4, " Link Cell done: " << nodep << endl);
+        UINFO(4, " Link Cell done: " << nodep);
     }
 
     void visit(AstRefDType* nodep) override {
@@ -508,6 +527,16 @@ class LinkCellsVisitor final : public VNVisitor {
         for (AstPin* pinp = nodep->paramsp(); pinp; pinp = VN_AS(pinp->nextp(), Pin)) {
             pinp->param(true);
             if (pinp->name() == "") pinp->name("__paramNumber" + cvtToStr(pinp->pinNum()));
+        }
+        if (m_varp) {  // Parser didn't know what was interface, resolve now
+            AstNodeModule* const varModp = findModuleSym(nodep->name());
+            if (AstIface* const ifacep = VN_CAST(varModp, Iface)) {
+                // Might be an interface, but might also not really be due to interface being
+                // hidden by another declaration.  Assume it is relevant and order as-if.
+                // This is safe because an interface cannot instantiate a module, so false
+                // module->interface edges are harmless.
+                newEdge(vertex(m_modp), vertex(ifacep), 1, false);
+            }
         }
     }
     void visit(AstClassOrPackageRef* nodep) override {
@@ -520,6 +549,17 @@ class LinkCellsVisitor final : public VNVisitor {
             pinp->param(true);
             if (pinp->name() == "") pinp->name("__paramNumber" + cvtToStr(pinp->pinNum()));
         }
+    }
+
+    void visit(AstVar* nodep) override {
+        {
+            VL_RESTORER(m_varp);
+            m_varp = nodep;
+            iterateAndNextNull(nodep->childDTypep());
+        }
+        iterateAndNextNull(nodep->delayp());
+        iterateAndNextNull(nodep->valuep());
+        iterateAndNextNull(nodep->attrsp());
     }
 
     void visit(AstNode* nodep) override { iterateChildren(nodep); }
@@ -566,9 +606,8 @@ class LinkCellsVisitor final : public VNVisitor {
 
 public:
     // CONSTRUCTORS
-    LinkCellsVisitor(AstNetlist* nodep, VInFilter* filterp, V3ParseSym* parseSymp)
+    LinkCellsVisitor(AstNetlist* nodep, VInFilter* filterp)
         : m_filterp{filterp}
-        , m_parseSymp{parseSymp}
         , m_mods{nodep} {
         if (v3Global.opt.hierChild()) {
             const V3HierBlockOptSet& hierBlocks = v3Global.opt.hierBlocks();
@@ -590,7 +629,7 @@ public:
 //######################################################################
 // Link class functions
 
-void V3LinkCells::link(AstNetlist* nodep, VInFilter* filterp, V3ParseSym* parseSymp) {
-    UINFO(4, __FUNCTION__ << ": " << endl);
-    { LinkCellsVisitor{nodep, filterp, parseSymp}; }
+void V3LinkCells::link(AstNetlist* nodep, VInFilter* filterp) {
+    UINFO(4, __FUNCTION__ << ": ");
+    { LinkCellsVisitor{nodep, filterp}; }
 }

@@ -33,6 +33,7 @@ elif [ "$CI_OS_NAME" = "freebsd" ]; then
 else
   fatal "Unknown os: '$CI_OS_NAME'"
 fi
+NPROC=$(expr $NPROC '+' 1)
 
 if [ "$CI_BUILD_STAGE_NAME" = "build" ]; then
   ##############################################################################
@@ -86,7 +87,7 @@ elif [ "$CI_BUILD_STAGE_NAME" = "test" ]; then
   fi
 
   # Run sanitize on Ubuntu 22.04 only
-  ( [ "$CI_RUNS_ON" = 'ubuntu-22.04' ] || [ "$CI_RUNS_ON" = 'ubuntu-24.04' ] ) && sanitize='--sanitize' || sanitize=''
+  ( [[ "$CI_RUNS_ON" =~ 'ubuntu-22.04' ]] || [[ "$CI_RUNS_ON" =~ 'ubuntu-24.04' ]] ) && sanitize='--sanitize' || sanitize=''
 
   TEST_REGRESS=test_regress
   if [ "$CI_RELOC" == 1 ]; then
@@ -97,6 +98,8 @@ elif [ "$CI_BUILD_STAGE_NAME" = "test" ]; then
      export VERILATOR_ROOT="$RELOC_DIR/relocated-install/share/verilator"
      TEST_REGRESS="$RELOC_DIR/test_regress"
      mv test_regress "$TEST_REGRESS"
+     NODIST="$RELOC_DIR/nodist"
+     mv nodist "$NODIST"
      # Feeling brave?
      find . -delete
      ls -la .
@@ -106,22 +109,25 @@ elif [ "$CI_BUILD_STAGE_NAME" = "test" ]; then
   ccache -z
   case $TESTS in
     dist-vlt-0)
-      "$MAKE" -C "$TEST_REGRESS" SCENARIOS="--dist --vlt $sanitize" DRIVER_HASHSET=--hashset=0/4
+      "$MAKE" -C "$TEST_REGRESS" SCENARIOS="--dist --vlt --driver-clean $sanitize" DRIVER_HASHSET=--hashset=0/4
       ;;
     dist-vlt-1)
-      "$MAKE" -C "$TEST_REGRESS" SCENARIOS="--dist --vlt $sanitize" DRIVER_HASHSET=--hashset=1/4
+      "$MAKE" -C "$TEST_REGRESS" SCENARIOS="--dist --vlt --driver-clean $sanitize" DRIVER_HASHSET=--hashset=1/4
       ;;
     dist-vlt-2)
-      "$MAKE" -C "$TEST_REGRESS" SCENARIOS="--dist --vlt $sanitize" DRIVER_HASHSET=--hashset=2/4
+      "$MAKE" -C "$TEST_REGRESS" SCENARIOS="--dist --vlt --driver-clean $sanitize" DRIVER_HASHSET=--hashset=2/4
       ;;
     dist-vlt-3)
-      "$MAKE" -C "$TEST_REGRESS" SCENARIOS="--dist --vlt $sanitize" DRIVER_HASHSET=--hashset=3/4
+      "$MAKE" -C "$TEST_REGRESS" SCENARIOS="--dist --vlt --driver-clean $sanitize" DRIVER_HASHSET=--hashset=3/4
       ;;
     vltmt-0)
-      "$MAKE" -C "$TEST_REGRESS" SCENARIOS=--vltmt DRIVER_HASHSET=--hashset=0/2
+      "$MAKE" -C "$TEST_REGRESS" SCENARIOS="--vltmt --driver-clean" DRIVER_HASHSET=--hashset=0/3
       ;;
     vltmt-1)
-      "$MAKE" -C "$TEST_REGRESS" SCENARIOS=--vltmt DRIVER_HASHSET=--hashset=1/2
+      "$MAKE" -C "$TEST_REGRESS" SCENARIOS="--vltmt --driver-clean" DRIVER_HASHSET=--hashset=1/3
+      ;;
+    vltmt-2)
+      "$MAKE" -C "$TEST_REGRESS" SCENARIOS="--vltmt --driver-clean" DRIVER_HASHSET=--hashset=2/3
       ;;
     coverage-all)
       nodist/code_coverage --stages 1-
@@ -194,6 +200,8 @@ elif [ "$CI_BUILD_STAGE_NAME" = "test" ]; then
       ;;
   esac
 
+  # To see load average (1 minute, 5 minute, 15 minute)
+  uptime
   # 22.04: ccache -s -v
   ccache -s
 

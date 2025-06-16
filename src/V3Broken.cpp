@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -332,11 +332,11 @@ public:
 // Broken check entry point
 
 void V3Broken::brokenAll(AstNetlist* nodep) {
-    // UINFO(9, __FUNCTION__ << ": " << endl);
+    // UINFO(9, __FUNCTION__ << ": ");
     static bool inBroken = false;
     if (VL_UNCOVERABLE(inBroken)) {
         // A error called by broken can recurse back into broken; avoid this
-        UINFO(1, "Broken called under broken, skipping recursion.\n");  // LCOV_EXCL_LINE
+        UINFO(1, "Broken called under broken, skipping recursion.");  // LCOV_EXCL_LINE
     } else {
         inBroken = true;
 

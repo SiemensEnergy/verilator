@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -132,11 +132,14 @@ class OrderGraphBuilder final : public VNVisitor {
         UASSERT_OBJ(!m_logicVxp, nodep, "AstActive under logic");
         UASSERT_OBJ(!m_inClocked && !m_domainp && !m_hybridp, nodep, "Should not nest");
 
+        VL_RESTORER(m_domainp);
+        VL_RESTORER(m_hybridp);
+        VL_RESTORER(m_inClocked);
+
         // This is the original sensitivity of the block (i.e.: not the ref into the TRIGGERVEC)
 
-        const AstSenTree* const senTreep = nodep->sensesp()->hasCombo()
-                                               ? nodep->sensesp()
-                                               : m_trigToSen.at(nodep->sensesp()->sensesp());
+        const AstSenTree* const senTreep
+            = nodep->sensesp()->hasCombo() ? nodep->sensesp() : m_trigToSen.at(nodep->sensesp());
 
         m_inClocked = senTreep->hasClocked();
 
@@ -164,11 +167,6 @@ class OrderGraphBuilder final : public VNVisitor {
 
         // Analyze logic underneath
         iterateChildren(nodep);
-
-        //
-        m_inClocked = false;
-        m_domainp = nullptr;
-        m_hybridp = nullptr;
     }
     void visit(AstNodeVarRef* nodep) override {
         // As we explicitly not visit (see ignored nodes below) any subtree that is not relevant
@@ -187,7 +185,8 @@ class OrderGraphBuilder final : public VNVisitor {
         const bool prevCon = varscp->user2() & VU_CON;
 
         // Compute whether the variable is produced (written) here
-        bool gen = !prevGen && nodep->access().isWriteOrRW();
+        const bool gen
+            = !prevGen && nodep->access().isWriteOrRW() && !varscp->varp()->ignoreSchedWrite();
 
         // Compute whether the value is consumed (read) here
         bool con = false;
@@ -216,24 +215,20 @@ class OrderGraphBuilder final : public VNVisitor {
             // Update VarUsage
             varscp->user2(varscp->user2() | VU_GEN);
             // Add edges for produced variables
-            if (!m_inClocked || m_inPost) {
-                // Combinational logic
-                OrderVarVertex* const varVxp = getVarVertex(varscp, VarVertexType::STD);
-                // Add edge from producing LogicVertex -> produced VarStdVertex
-                if (m_inPost) {
-                    m_graphp->addSoftEdge(m_logicVxp, varVxp, WEIGHT_COMBO);
-                } else {
+            if (m_inPost) {
+                if (!varscp->varp()->ignorePostWrite()) {
+                    // Add edge from producing LogicVertex -> produced VarStdVertex
+                    OrderVarVertex* const varVxp = getVarVertex(varscp, VarVertexType::STD);
                     m_graphp->addHardEdge(m_logicVxp, varVxp, WEIGHT_NORMAL);
                 }
-
+                OrderVarVertex* const postVxp = getVarVertex(varscp, VarVertexType::POST);
                 // Add edge from produced VarPostVertex -> to producing LogicVertex
-
-                // For m_inPost:
-                //    Add edge consumed_var_POST->logic_vertex
-                //    This prevents a consumer of the "early" value to be scheduled
-                //   after we've changed to the next-cycle value
-                // ALWAYS do it:
-                //    There maybe a wire a=b; between the two blocks
+                m_graphp->addHardEdge(postVxp, m_logicVxp, WEIGHT_POST);
+            } else if (!m_inClocked) {  // Combinational logic
+                // Add edge from producing LogicVertex -> produced VarStdVertex
+                OrderVarVertex* const varVxp = getVarVertex(varscp, VarVertexType::STD);
+                m_graphp->addHardEdge(m_logicVxp, varVxp, WEIGHT_NORMAL);
+                // Add edge from produced VarPostVertex -> to producing LogicVertex
                 OrderVarVertex* const postVxp = getVarVertex(varscp, VarVertexType::POST);
                 m_graphp->addHardEdge(postVxp, m_logicVxp, WEIGHT_POST);
             } else if (m_inPre) {  // AstAssignPre
@@ -304,9 +299,9 @@ class OrderGraphBuilder final : public VNVisitor {
     }
     void visit(AstAlwaysPost* nodep) override {
         UASSERT_OBJ(!m_inPost, nodep, "Should not nest");
+        VL_RESTORER(m_inPost);
         m_inPost = true;
         iterateLogic(nodep);
-        m_inPost = false;
     }
     void visit(AstAlwaysObserved* nodep) override {  //
         iterateLogic(nodep);

@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -67,7 +67,7 @@ class PremitVisitor final : public VNVisitor {
 
     AstVar* createWideTemp(AstNodeExpr* nodep) {
         UASSERT_OBJ(m_stmtp, nodep, "Attempting to create temporary with no insertion point");
-        UINFO(4, "createWideTemp: " << nodep << endl);
+        UINFO(4, "createWideTemp: " << nodep);
 
         VNRelinker relinker;
         nodep->unlinkFrBack(&relinker);
@@ -118,7 +118,7 @@ class PremitVisitor final : public VNVisitor {
 
     void visitShift(AstNodeBiop* nodep) {
         // Shifts of > 32/64 bits in C++ will wrap-around and generate non-0s
-        UINFO(4, "  ShiftFix  " << nodep << endl);
+        UINFO(4, "  ShiftFix  " << nodep);
         const AstConst* const shiftp = VN_CAST(nodep->rhsp(), Const);
         if (shiftp && shiftp->num().mostSetBitP1() > 32) {
             shiftp->v3error(
@@ -141,8 +141,7 @@ class PremitVisitor final : public VNVisitor {
                 newp = new AstShiftRSOvr{nodep->fileline(), nodep->lhsp()->unlinkFrBack(),
                                          nodep->rhsp()->unlinkFrBack()};
             }
-            newp->dtypeFrom(nodep);
-            nodep->replaceWith(newp);
+            nodep->replaceWithKeepDType(newp);
             VL_DO_DANGLING(pushDeletep(nodep), nodep);
             return;
         }
@@ -182,7 +181,7 @@ class PremitVisitor final : public VNVisitor {
     m_inWhileCondp = nullptr
 
     void visit(AstWhile* nodep) override {
-        UINFO(4, "  WHILE  " << nodep << endl);
+        UINFO(4, "  WHILE  " << nodep);
         // cppcheck-suppress shadowVariable  // Also restored below
         START_STATEMENT_OR_RETURN(nodep);
         iterateAndNextNull(nodep->precondsp());
@@ -198,6 +197,16 @@ class PremitVisitor final : public VNVisitor {
     void visit(AstNodeAssign* nodep) override {
         START_STATEMENT_OR_RETURN(nodep);
 
+        if (AstCvtArrayToPacked* const packedp = VN_CAST(nodep->lhsp(), CvtArrayToPacked)) {
+            // AstCvtArrayToPacked is converted to VL_PACK, which returns rvalue,
+            // so it shouldn't be on the LHS. It is now replaced with unpacking of RHS.
+            AstNodeExpr* const exprLhsp = packedp->fromp()->unlinkFrBack();
+            packedp->replaceWith(exprLhsp);
+            VL_DO_DANGLING(pushDeletep(packedp), packedp);
+            AstNodeExpr* const rhsp = nodep->rhsp()->unlinkFrBack();
+            nodep->rhsp(new AstCvtPackedToArray{rhsp->fileline(), rhsp, exprLhsp->dtypep()});
+            nodep->dtypeFrom(exprLhsp);
+        }
         // Direct assignment to a simple variable
         if (VN_IS(nodep->lhsp(), VarRef) && !AstVar::scVarRecurse(nodep->lhsp())) {
             AstNode* const rhsp = nodep->rhsp();
@@ -232,7 +241,7 @@ class PremitVisitor final : public VNVisitor {
                 && nodep->filep()->sameGateTree(VN_AS(searchp, Display)->filep())) {
                 // There's another display next; we can just wait to flush
             } else {
-                UINFO(4, "Autoflush " << nodep << endl);
+                UINFO(4, "Autoflush " << nodep);
                 nodep->addNextHere(
                     new AstFFlush{nodep->fileline(),
                                   nodep->filep() ? nodep->filep()->cloneTreePure(true) : nullptr});
@@ -278,6 +287,15 @@ class PremitVisitor final : public VNVisitor {
         iterateChildren(nodep);
         checkNode(nodep);
     }
+    void visit(AstCvtPackedToArray* nodep) override {
+        iterateChildren(nodep);
+        checkNode(nodep);
+        if (!VN_IS(nodep->backp(), NodeAssign)) createWideTemp(nodep);
+    }
+    void visit(AstCvtUnpackedToQueue* nodep) override {
+        iterateChildren(nodep);
+        checkNode(nodep);
+    }
     void visit(AstSel* nodep) override {
         iterateAndNextNull(nodep->fromp());
         {  // Only the 'from' is part of the assignment LHS
@@ -289,13 +307,11 @@ class PremitVisitor final : public VNVisitor {
         checkNode(nodep);
     }
     void visit(AstArraySel* nodep) override {
-        // Skip straight to children. Don't replace the array
-        iterateChildren(nodep->fromp());
+        iterateAndNextNull(nodep->fromp());
         {  // Only the 'from' is part of the assignment LHS
             VL_RESTORER(m_assignLhs);
             m_assignLhs = false;
-            // Index is never wide, so skip straight to children
-            iterateChildren(nodep->bitp());
+            iterateAndNextNull(nodep->bitp());
         }
         // ArraySel are just pointer arithmetic and should never be replaced
     }
@@ -351,7 +367,7 @@ public:
 // Premit class functions
 
 void V3Premit::premitAll(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     { PremitVisitor{nodep}; }  // Destruct before checking
     V3Global::dumpCheckGlobalTree("premit", 0, dumpTreeEitherLevel() >= 3);
 }

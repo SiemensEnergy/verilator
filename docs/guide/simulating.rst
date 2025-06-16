@@ -1,4 +1,4 @@
-.. Copyright 2003-2024 by Wilson Snyder.
+.. Copyright 2003-2025 by Wilson Snyder.
 .. SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
 .. _Simulating:
@@ -18,7 +18,9 @@ Simulation Summary Report
 =========================
 
 When simulation finishes, it will print a report to stdout summarizing the
-simulation. This requires the model being Verilated with :vlopt:`--main`.
+simulation. This requires the model being Verilated with :vlopt:`--main`,
+or the user's `main()` calling `VerilatedContext->statsPrintSummary()`.
+
 The report may be disabled with :vlopt:`+verilator+quiet`.
 
 For example:
@@ -81,9 +83,10 @@ option will require a longer time to run Verilator, and
 may increase the risk of reset bugs in trade for performance; see the above
 documentation for these options.
 
-If using Verilated multithreaded, use ``numactl`` to ensure you use
-non-conflicting hardware resources. See :ref:`Multithreading`. Also,
-consider using profile-guided optimization; see :ref:`Thread PGO`.
+If using Verilated multithreaded, consider overriding Verilator's default
+thread-to-processor assignment by using ``numactl``; see
+:ref:`Multithreading`. Also, consider using profile-guided optimization;
+see :ref:`Thread PGO`.
 
 Minor Verilog code changes can also give big wins.  You should not have any
 :option:`UNOPTFLAT` warnings from Verilator.  Fixing these warnings can
@@ -222,14 +225,6 @@ at branches).  At each such branch, a counter is incremented.  At the end
 of a test, the counters, filename, and line number corresponding to each
 counter are written into the coverage file.
 
-Verilator automatically disables coverage of branches with a $stop in
-them, as it is assumed that $stop branches contain an error check that should
-not occur.  A :option:`/*verilator&32;coverage_block_off*/` metacomment
-will perform a similar function on any code in that block or below, or
-:option:`/*verilator&32;coverage_off*/` and
-:option:`/*verilator&32;coverage_on*/` will disable and enable coverage
-respectively around a block of code.
-
 Verilator may over-count combinatorial (non-clocked) blocks when those
 blocks receive signals which have had the :option:`UNOPTFLAT` warning
 disabled; for the most accurate results, do not disable this warning when
@@ -275,6 +270,58 @@ A :option:`/*verilator&32;coverage_off*/`
 :option:`/*verilator&32;coverage_on*/` metacomment pair can be used around
 signals that do not need toggle analysis, such as RAMs and register files.
 
+
+.. _Expression Coverage:
+
+Expression Coverage
+-------------------
+
+With :vlopt:`--coverage` or :vlopt:`--coverage-expr`, Verilator will
+automatically add coverage analysis at each expression, indicating with a
+truth table how every Boolean truth-table possibility in the expression
+occurred.
+
+Multi-bit expressions are ignored, but sub-expressions with are entirely
+Boolean are analyzed.  Expression coverage does not fully explore the truth
+table of an expression, rather is looks at each term's contribution.  E.g.
+an AND operation will check coverage for TT, XF and FX.
+
+Some expressions may produce too many cover points.  Verilator limits the
+maximum number of cover points per expression to 32, but this may be
+controlled with :vlopt:`--coverage-expr-max`.
+
+Below is an example showing expression coverage produced from `verilator_coverage`
+as applied to the condition expression inside an if statement.  Each line
+shows the minimum number of terms and their values (e.g. `(t1==0 && t2==1)`) needed
+to reach a result for the overall expression (e.g. `=> 1`).  Each line also
+shows the number of times this combination was hit.  Note that individual lines
+are not mutually exclusive.
+
+.. code-block::
+
+   %000004         if ((~t1 && t2) || (~t3 && t4)) $write("");
+   -000002  point: comment=(t1==0 && t2==1) => 1 hier=top.t
+   -000002  point: comment=(t1==1 && t3==1) => 0 hier=top.t
+   -000004  point: comment=(t1==1 && t4==0) => 0 hier=top.t
+   -000002  point: comment=(t2==0 && t3==1) => 0 hier=top.t
+   -000003  point: comment=(t2==0 && t4==0) => 0 hier=top.t
+   -000002  point: comment=(t3==0 && t4==1) => 1 hier=top.t
+
+.. _Suppressing Coverage:
+
+Suppressing Coverage
+--------------------
+
+Using :option:`/*verilator&32;coverage_off*/` and
+:option:`/*verilator&32;coverage_on*/` around a block of code will disable
+and enable coverage respectively around that block. Or, use the
+:option:`coverage_block_off` configuration file option.
+
+Verilator automatically disables coverage of lines and branches with a
+$stop in them, as it is assumed that $stop branches contain an error check
+that should not occur.  A :option:`/*verilator&32;coverage_block_off*/`
+metacomment will perform a similar function on any code in that block or
+below.
 
 .. _Coverage Collection:
 

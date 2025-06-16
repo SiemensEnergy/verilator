@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -111,7 +111,7 @@ template <> void foldOp<DfgLogOr>      (V3Number& out, const V3Number& lhs, cons
 template <> void foldOp<DfgLt>         (V3Number& out, const V3Number& lhs, const V3Number& rhs) { out.opLt(lhs, rhs); }
 template <> void foldOp<DfgLtS>        (V3Number& out, const V3Number& lhs, const V3Number& rhs) { out.opLtS(lhs, rhs); }
 template <> void foldOp<DfgLte>        (V3Number& out, const V3Number& lhs, const V3Number& rhs) { out.opLte(lhs, rhs); }
-template <> void foldOp<DfgLteS>       (V3Number& out, const V3Number& lhs, const V3Number& rhs) { out.opLtS(lhs, rhs); }
+template <> void foldOp<DfgLteS>       (V3Number& out, const V3Number& lhs, const V3Number& rhs) { out.opLteS(lhs, rhs); }
 template <> void foldOp<DfgModDiv>     (V3Number& out, const V3Number& lhs, const V3Number& rhs) { out.opModDiv(lhs, rhs); }
 template <> void foldOp<DfgModDivS>    (V3Number& out, const V3Number& lhs, const V3Number& rhs) { out.opModDivS(lhs, rhs); }
 template <> void foldOp<DfgMul>        (V3Number& out, const V3Number& lhs, const V3Number& rhs) { out.opMul(lhs, rhs); }
@@ -152,7 +152,7 @@ class V3DfgPeephole final : public DfgVisitor {
     // METHODS
     bool checkApplying(VDfgPeepholePattern id) {
         if (!m_ctx.m_enabled[id]) return false;
-        UINFO(9, "Applying DFG patten " << id.ascii() << endl);
+        UINFO(9, "Applying DFG pattern " << id.ascii());
         ++m_ctx.m_count[id];
         return true;
     }
@@ -844,7 +844,8 @@ class V3DfgPeephole final : public DfgVisitor {
         // Sel from Cond
         if (DfgCond* const condp = fromp->cast<DfgCond>()) {
             // If at least one of the branches are a constant, push the select past the cond
-            if (condp->thenp()->is<DfgConst>() || condp->elsep()->is<DfgConst>()) {
+            if (!condp->hasMultipleSinks()
+                && (condp->thenp()->is<DfgConst>() || condp->elsep()->is<DfgConst>())) {
                 APPLYING(PUSH_SEL_THROUGH_COND) {
                     // The new 'then' vertex
                     DfgSel* const newThenp = make<DfgSel>(vtxp, condp->thenp(), lsb);

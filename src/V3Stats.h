@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2005-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2005-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -46,7 +46,7 @@ public:
     }
     VDouble0 operator++(int) {  // postfix
         VDouble0 old = *this;
-        m_d++;
+        ++m_d;
         return old;
     }
     VDouble0& operator=(const double v) {

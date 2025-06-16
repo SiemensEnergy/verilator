@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -79,12 +79,12 @@ void V3GraphVertex::rerouteEdges(V3Graph* graphp) {
     unlinkEdges(graphp);
 }
 
-template <GraphWay::en T_Way>
+template <GraphWay::en N_Way>
 V3GraphEdge* V3GraphVertex::findConnectingEdgep(V3GraphVertex* waywardp) {
     // O(edges) linear search. Searches search both nodes' edge lists in
     // parallel.  The lists probably aren't _both_ huge, so this is
     // unlikely to blow up even on fairly nasty graphs.
-    constexpr GraphWay way{T_Way};
+    constexpr GraphWay way{N_Way};
     constexpr GraphWay inv = way.invert();
     auto& aEdges = this->edges<way>();
     auto aIt = aEdges.begin();
@@ -108,14 +108,11 @@ template V3GraphEdge* V3GraphVertex::findConnectingEdgep<GraphWay::REVERSE>(V3Gr
 void V3GraphVertex::v3errorEnd(std::ostringstream& str) const VL_RELEASE(V3Error::s().m_mutex) {
     std::ostringstream nsstr;
     nsstr << str.str();
-    if (debug()) {
-        nsstr << endl;
-        nsstr << "-vertex: " << this << endl;
-    }
+    if (debug()) nsstr << "\n-vertex: " << this << '\n';
     if (FileLine* const flp = fileline()) {
         flp->v3errorEnd(nsstr);
     } else {
-        V3Error::v3errorEnd(nsstr);
+        V3Error::v3errorEnd(nsstr, "", nullptr);
     }
 }
 void V3GraphVertex::v3errorEndFatal(std::ostringstream& str) const
@@ -233,13 +230,16 @@ void V3Graph::clearColors() {
 //======================================================================
 // Dumping
 
-void V3Graph::loopsMessageCb(V3GraphVertex* vertexp) {
-    vertexp->v3fatalSrc("Loops detected in graph: " << vertexp);
+void V3Graph::loopsMessageCb(V3GraphVertex* vertexp, V3EdgeFuncP edgeFuncp) {
+    vertexp->v3fatalSrc("Loops detected in graph: " << vertexp << "\n"
+                                                    << reportLoops(edgeFuncp, vertexp));
 }
-
-void V3Graph::loopsVertexCb(V3GraphVertex* vertexp) {
+string V3Graph::loopsVertexCb(V3GraphVertex* vertexp) {
     // Needed here as V3GraphVertex<< isn't defined until later in header
-    if (debug()) std::cerr << "-Info-Loop: " << cvtToHex(vertexp) << " " << vertexp << endl;
+    if (debug())
+        return "-Info-Loop: "s + cvtToHex(vertexp) + ' ' + cvtToStr(vertexp) + '\n';
+    else
+        return "";
 }
 
 void V3Graph::dump(std::ostream& os) const {
@@ -284,7 +284,7 @@ void V3Graph::dumpDotFile(const string& filename, bool colorAsSubgraph) const {
     // This generates a file used by graphviz, https://www.graphviz.org
     // "hardcoded" parameters:
     const std::unique_ptr<std::ofstream> logp{V3File::new_ofstream(filename)};
-    if (logp->fail()) v3fatal("Can't write " << filename);
+    if (logp->fail()) v3fatal("Can't write file: " << filename);
 
     // Header
     *logp << "digraph v3graph {\n";

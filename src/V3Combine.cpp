@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -113,8 +113,8 @@ class CombineVisitor final : VNVisitor {
                 if (oldp->user3()) std::swap(oldp, newp);
 
                 // Something is being replaced
-                UINFO(9, "Replacing " << oldp << endl);
-                UINFO(9, "     with " << newp << endl);
+                UINFO(9, "Replacing " << oldp);
+                UINFO(9, "     with " << newp);
                 ++m_cfuncsCombined;
                 replaced = true;
 
@@ -188,9 +188,9 @@ class CombineVisitor final : VNVisitor {
     }
     void visit(AstNodeModule* nodep) override {
         UASSERT_OBJ(!m_modp, nodep, "Should not nest");
+        VL_RESTORER(m_modp);
         m_modp = nodep;
         iterateChildrenConst(nodep);
-        m_modp = nullptr;
     }
     void visit(AstCFunc* nodep) override {
         iterateChildrenConst(nodep);
@@ -233,7 +233,7 @@ public:
 // Combine class functions
 
 void V3Combine::combineAll(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     CombineVisitor::apply(nodep);
     V3Global::dumpCheckGlobalTree("combine", 0, dumpTreeEitherLevel() >= 3);
 }

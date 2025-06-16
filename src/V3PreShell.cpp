@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2004-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2004-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -87,7 +87,7 @@ protected:
     bool preproc(FileLine* fl, const string& modname, VInFilter* filterp, V3ParseImp* parsep,
                  const string& errmsg) {  // "" for no error
         // Preprocess the given module, putting output in vppFilename
-        UINFO(1, "Preprocessing " << modname << endl);
+        UINFO(1, "Preprocessing " << modname);
 
         // Preprocess
         s_filterp = filterp;
@@ -95,7 +95,7 @@ protected:
         if (modfilename.empty()) return false;
 
         // Set language standard up front
-        if (!v3Global.opt.preprocOnly()) {
+        if (!v3Global.opt.preprocOnly() || v3Global.opt.preprocResolve()) {
             // Letting lex parse this saves us from having to specially en/decode
             // from the V3LangCode to the various Lex BEGIN states. The language
             // of this source file is updated here, in case there have been any
@@ -140,7 +140,7 @@ private:
         }
         if (filename == "") return "";  // Not found
 
-        UINFO(2, "    Reading " << filename << endl);
+        UINFO(2, "    Reading " << filename);
         s_preprocp->openFile(fl, filterp, filename);
         return filename;
     }

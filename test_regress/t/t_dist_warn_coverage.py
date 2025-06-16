@@ -19,36 +19,42 @@ Suppressed = {}
 
 for s in [
         ' exited with ',  # Is hit; driver.py filters out
+        ' loading non-variable',  # Instead 'storing to parameter' or syntax error
+        '--pipe-filter: Can\'t pipe: ',  # Can't test
+        '--pipe-filter: fork failed: ',  # Can't test
+        'Assigned pin is neither input nor output',  # Instead earlier error
+        'Define missing argument \'',  # Instead get Define passed too many arguments
+        'Define or directive not defined: `',  # Instead V3ParseImp will warn
         'EOF in unterminated string',  # Instead get normal unterminated
-        'Enum names without values only allowed on numeric types',  # Hard to hit
         'Enum ranges must be integral, per spec',  # Hard to hit
+        'Expecting define formal arguments. Found: ',  # Instead define syntax error
+        'Import package not found: ',  # Errors earlier, until future parser released
+        'Member selection of non-struct/union object \'',  # Instead dotted expression error or V3Link other
         'Return with return value isn\'t underneath a function',  # Hard to hit, get other bad return messages
-        'Syntax error: Range \':\', \'+:\' etc are not allowed in the instance ',  # Instead get syntax error
         'Syntax error parsing real: \'',  # Instead can't lex the number
+        'Syntax error: Range \':\', \'+:\' etc are not allowed in the instance ',  # Instead get syntax error
         'Unsupported: Ranges ignored in port-lists',  # Hard to hit
         'dynamic new() not expected in this context (expected under an assign)',  # Instead get syntax error
         # Not yet analyzed
-        ' loading non-variable',
         '--pipe-filter protocol error, unexpected: ',
-        '/*verilator sformat*/ can only be applied to last argument of ',
+        '--pipe-filter returned bad status',
         'Argument needed for string.',
         'Array initialization has too few elements, need element ',
-        'Assigned pin is neither input nor output',
         'Assignment pattern with no members',
         'Can\'t find varpin scope of ',
+        'Can\'t read annotation file: ',
         'Can\'t resolve module reference: \'',
-        'Cannot write preprocessor output: ',
-        'Circular logic when ordering code (non-cutable edge loop)',
-        'Define or directive not defined: `',
-        'Exceeded limit of ',
+        'Can\'t write file: ',
+        'Expected data type, not a ',
         'Extern declaration\'s scope is not a defined class',
+        'File not found: ',
         'Format to $display-like function must have constant format string',
         'Forward typedef used as class/package does not resolve to class/package: ',
         'Illegal +: or -: select; type already selected, or bad dimension: ',
         'Illegal bit or array select; type already selected, or bad dimension: ',
         'Illegal range select; type already selected, or bad dimension: ',
         'Interface port ',
-        'Member selection of non-struct/union object \'',
+        'Interface port declaration ',
         'Modport item is not a function/task: ',
         'Modport item is not a variable: ',
         'Modport item not found: ',
@@ -58,6 +64,7 @@ for s in [
         'Parameter type pin value isn\'t a type: Param ',
         'Parameter type variable isn\'t a type: Param ',
         'Pattern replication value of 0 is not legal.',
+        'Reference to \'',
         'Signals inside functions/tasks cannot be marked forceable',
         'Slice size cannot be zero.',
         'Slices of arrays in assignments have different unpacked dimensions, ',
@@ -70,28 +77,44 @@ for s in [
         'Unsupported pullup/down (weak driver) construct.',
         'Unsupported tristate construct (not in propagation graph): ',
         'Unsupported tristate port expression: ',
-        'Unsupported/unknown built-in dynamic array method ',
         'Unsupported: $bits for queue',
-        'Unsupported: $c can\'t generate wider than 64 bits',
+        'Unsupported: &&& expression',
+        'Unsupported: +%- range',
+        'Unsupported: +/- range',
         'Unsupported: 4-state numbers in this context',
+        'Unsupported: Bind with instance list',
         'Unsupported: Concatenation to form ',
-        'Unsupported: Non-variable on LHS of built-in method \'',
+        'Unsupported: Modport clocking',
+        'Unsupported: Modport dotted port name',
+        'Unsupported: Modport export with prototype',
+        'Unsupported: Modport import with prototype',
         'Unsupported: Only one PSL clock allowed per assertion',
         'Unsupported: Per-bit array instantiations ',
         'Unsupported: Public functions with >64 bit outputs; ',
-        'Unsupported: RHS of ==? or !=? must be ',
         'Unsupported: Replication to form ',
         'Unsupported: Shifting of by over 32-bit number isn\'t supported.',
         'Unsupported: Signal strengths are unsupported ',
         'Unsupported: Size-changing cast on non-basic data type',
         'Unsupported: Slice of non-constant bounds',
         'Unsupported: Unclocked assertion',
+        'Unsupported: Verilog 1995 deassign',
+        'Unsupported: Verilog 1995 gate primitive: ',
+        'Unsupported: [] dimensions',
+        'Unsupported: \'default :/\' constraint',
+        'Unsupported: \'{} .* patterns',
+        'Unsupported: assertion items in clocking blocks',
         'Unsupported: don\'t know how to deal with ',
-        'Unsupported: event arrays',
+        'Unsupported: eventually[] (in property expression)',
+        'Unsupported: extern forkjoin',
+        'Unsupported: extern task',
         'Unsupported: modport export',
         'Unsupported: no_inline for tasks',
+        'Unsupported: property port \'local\'',
+        'Unsupported: repeat event control',
         'Unsupported: static cast to ',
         'Unsupported: super',
+        'Unsupported: this.super',
+        'Unsupported: with[] stream expression',
 ]:
     Suppressed[s] = True
 
@@ -111,11 +134,11 @@ def read_messages():
                     continue
                 if re.match(r'^\s*/\*', line):
                     continue
-                if re.search(r'\b(v3error|v3warn)\b\($', line):
+                if re.search(r'\b(v3error|v3warn|v3fatal|BBUNSUP)\b\($', line):
                     if 'LCOV_EXCL_LINE' not in line:
                         read_next = True
                     continue
-                m = re.search(r'.*\b(v3error|v3warn)\b(.*)', line)
+                m = re.search(r'.*\b(v3error|v3warn|v3fatal|BBUNSUP)\b(.*)', line)
                 if m:
                     line = m.group(2)
                     if 'LCOV_EXCL_LINE' not in line:
@@ -159,13 +182,13 @@ def check():
     read_outputs()
 
     print("Number of suppressions = " + str(len(Suppressed)))
-    print("Coverage = ", str(100 - int(100 * len(Suppressed) / len(Messages))))
+    print("Coverage = %3.1f%%" % (100 - (100 * len(Suppressed) / len(Messages))))
     print()
 
     print("Checking for v3error/v3warn messages in sources without")
     print("coverage in test_regress/t/*.out:")
-    print("(Developers: If a message is impossible to test, use UASSERT or")
-    print("v3fatalSrc instead of v3error)")
+    print("(Developers: If a message is impossible to test, consider using")
+    print("UASSERT or v3fatalSrc instead of v3error)")
     print()
 
     used_suppressed = {}
@@ -194,8 +217,9 @@ def check():
             if test.verbose:
                 print(fileline + ": Suppressed check for message in source: '" + msg + "'")
         else:
-            test.error(fileline + ": Missing test_regress/t/*.out test for message in source: '" +
-                       msg + "'")
+            test.error_keep_going(fileline +
+                                  ": Missing test_regress/t/*.out test for message in source: '" +
+                                  msg + "'")
             if test.verbose:
                 print("  Line is: " + line)
 

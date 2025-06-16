@@ -7,7 +7,7 @@
 #
 #*****************************************************************************
 #
-# Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+# Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 # can redistribute it and/or modify it under the terms of either the GNU
 # Lesser General Public License Version 3 or the Perl Artistic License
 # Version 2.0.
@@ -142,6 +142,8 @@ BISONPRE = $(srcdir)/bisonpre
 FLEXFIX = $(srcdir)/flexfix
 VLCOVGEN = $(srcdir)/vlcovgen
 
+# BISON_DEBUG = -Wcounterexamples
+
 ######################################################################
 # CCACHE flags (via environment as no command line option available)
 CCACHE_SLOPPINESS ?= pch_defines,time_macros
@@ -204,6 +206,7 @@ RAW_OBJS_PCH_ASTMT = \
 	V3EmitCPch.o \
 	V3EmitV.o \
 	V3File.o \
+	V3FuncOpt.o \
 	V3Global.o \
 	V3Hasher.o \
 	V3Number.o \
@@ -244,12 +247,14 @@ RAW_OBJS_PCH_ASTNOMT = \
 	V3DfgPasses.o \
 	V3DfgPeephole.o \
 	V3DfgRegularize.o \
+	V3DiagSarif.o \
 	V3DupFinder.o \
 	V3EmitCMain.o \
 	V3EmitCMake.o \
 	V3EmitCModel.o \
 	V3EmitCSyms.o \
 	V3EmitMk.o \
+	V3EmitMkJson.o \
 	V3EmitXml.o \
 	V3ExecGraph.o \
 	V3Expand.o \
@@ -307,6 +312,7 @@ RAW_OBJS_PCH_ASTNOMT = \
 	V3Trace.o \
 	V3TraceDecl.o \
 	V3Tristate.o \
+	V3Udp.o \
 	V3Undriven.o \
 	V3Unknown.o \
 	V3Unroll.o \
@@ -363,7 +369,7 @@ $(TGT): $(PREDEP_H) $(OBJS)
 .SECONDARY:
 
 %.gch: %
-	$(OBJCACHE) ${CXX} ${CXXFLAGS} ${CPPFLAGSWALL} ${CFG_CXXFLAGS_PCH} $< -o $@
+	$(OBJCACHE) ${CXX} ${CXXFLAGS} ${CPPFLAGSWALL} ${CFG_CXXFLAGS_PCH} -c $< -o $@
 %.o: %.cpp
 	$(OBJCACHE) ${CXX} ${CXXFLAGS} ${CPPFLAGSWALL} -c $< -o $@
 %.o: %.c
@@ -416,7 +422,7 @@ V3ParseBison.h: V3ParseBison.c
 # Have only one output file in this rule to prevent parallel make issues
 V3ParseBison.c: verilog.y $(BISONPRE)
 	@echo "If you get errors from verilog.y below, try upgrading bison to version 1.875 or newer."
-	$(PYTHON3) $(BISONPRE) --yacc ${YACC} -d -v -o V3ParseBison.c $<
+	$(PYTHON3) $(BISONPRE) --yacc ${YACC} -d -v -o V3ParseBison.c $(BISON_DEBUG) $<
 
 V3Lexer_pregen.yy.cpp: verilog.l V3ParseBison.h $(HEADERS)
 	${LEX} --version

@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -18,6 +18,7 @@
 
 #include "V3EmitC.h"
 #include "V3EmitCConstInit.h"
+#include "V3File.h"
 #include "V3UniqueNames.h"
 
 #include <algorithm>
@@ -222,7 +223,7 @@ class EmitCHeader final : public EmitCConstInit {
                         std::set<AstNodeUOrStructDType*>& emitted) {
         if (emitted.count(sdtypep) > 0) return;
         emitted.insert(sdtypep);
-        for (const AstMemberDType* itemp = sdtypep->membersp(); itemp;
+        for (AstMemberDType* itemp = sdtypep->membersp(); itemp;
              itemp = VN_AS(itemp->nextp(), MemberDType)) {
             AstNodeUOrStructDType* const subp = itemp->getChildStructp();
             if (subp && (!subp->packed() || sdtypep->packed())) {
@@ -239,6 +240,45 @@ class EmitCHeader final : public EmitCConstInit {
             emitUnpackedUOrSBody(sdtypep);
         }
     }
+    enum class AttributeType { Width, Dimension };
+    // Get member attribute based on type
+    int getNodeAttribute(const AstMemberDType* itemp, AttributeType type) {
+        const bool isArrayType
+            = VN_IS(itemp->dtypep(), UnpackArrayDType) || VN_IS(itemp->dtypep(), DynArrayDType)
+              || VN_IS(itemp->dtypep(), QueueDType) || VN_IS(itemp->dtypep(), AssocArrayDType);
+        switch (type) {
+        case AttributeType::Width: {
+            if (isArrayType) {
+                // For arrays, get innermost element width
+                AstNodeDType* dtype = itemp->dtypep();
+                while (dtype->subDTypep()) dtype = dtype->subDTypep();
+                return dtype->width();
+            }
+            return itemp->width();
+        }
+        case AttributeType::Dimension: {
+            // Return array dimension or 0 for non-arrays
+            return isArrayType ? itemp->dtypep()->dimensions(true).second : 0;
+        }
+        default: {
+            return 0;
+        }
+        }
+    }
+    template <AttributeType T>
+    void emitMemberVector(const AstNodeUOrStructDType* sdtypep) {
+        puts("return {");
+        bool needComma = false;
+        for (const AstMemberDType* itemp = sdtypep->membersp(); itemp;
+             itemp = VN_AS(itemp->nextp(), MemberDType)) {
+            if (!itemp->isConstrainedRand()) continue;
+            // Comma handling: add before element except first
+            if (needComma) puts(",\n");
+            putns(itemp, std::to_string(getNodeAttribute(itemp, T)));
+            needComma = true;
+        }
+        puts("};\n}\n");
+    }
     void emitUnpackedUOrSBody(AstNodeUOrStructDType* sdtypep) {
         putns(sdtypep, sdtypep->verilogKwd());  // "struct"/"union"
         puts(" " + EmitCBase::prefixNameProtect(sdtypep) + " {\n");
@@ -248,6 +288,56 @@ class EmitCHeader final : public EmitCConstInit {
             puts(";\n");
         }
 
+        // Three helper functions for struct constrained randomization:
+        // - memberNames: Get member names
+        // - getMembers: Access member references
+        // - memberIndices: Retrieve member indices
+        // - memberWidth: Retrieve member width
+        // - memberDimension: Retrieve member dimension
+        if (sdtypep->isConstrainedRand()) {
+            bool needComma = false;
+            putns(sdtypep, "\nstd::vector<std::string> memberNames(void) const {\n");
+            puts("return {");
+            for (const AstMemberDType* itemp = sdtypep->membersp(); itemp;
+                 itemp = VN_AS(itemp->nextp(), MemberDType)) {
+                if (!itemp->isConstrainedRand()) continue;
+                if (needComma) puts(",\n");
+                putns(itemp, "\"" + itemp->shortName() + "\"");
+                needComma = true;
+            }
+            puts("};\n}\n");
+
+            putns(sdtypep, "\nstd::vector<int> memberWidth(void) const {\n");
+            emitMemberVector<AttributeType::Width>(sdtypep);
+
+            putns(sdtypep, "\nstd::vector<int> memberDimension(void) const {\n");
+            emitMemberVector<AttributeType::Dimension>(sdtypep);
+
+            needComma = false;
+            putns(sdtypep, "\nauto memberIndices(void) const {\n");
+            puts("return std::index_sequence_for<");
+            for (const AstMemberDType* itemp = sdtypep->membersp(); itemp;
+                 itemp = VN_AS(itemp->nextp(), MemberDType)) {
+                if (!itemp->isConstrainedRand()) continue;
+                if (needComma) puts(",\n");
+                putns(itemp, itemp->dtypep()->cType("", false, false));
+                needComma = true;
+            }
+            puts(">{};\n}\n");
+
+            needComma = false;
+            putns(sdtypep, "\ntemplate <typename T>");
+            putns(sdtypep, "\nauto getMembers(T& obj) {\n");
+            puts("return std::tie(");
+            for (const AstMemberDType* itemp = sdtypep->membersp(); itemp;
+                 itemp = VN_AS(itemp->nextp(), MemberDType)) {
+                if (!itemp->isConstrainedRand()) continue;
+                if (needComma) puts(",\n");
+                putns(itemp, "obj." + itemp->nameProtect());
+                needComma = true;
+            }
+            puts(");\n}\n");
+        }
         putns(sdtypep, "\nbool operator==(const " + EmitCBase::prefixNameProtect(sdtypep)
                            + "& rhs) const {\n");
         puts("return ");
@@ -261,7 +351,27 @@ class EmitCHeader final : public EmitCConstInit {
         putns(sdtypep, "bool operator!=(const " + EmitCBase::prefixNameProtect(sdtypep)
                            + "& rhs) const {\n");
         puts("return !(*this == rhs);\n}\n");
+        putns(sdtypep, "\nbool operator<(const " + EmitCBase::prefixNameProtect(sdtypep)
+                           + "& rhs) const {\n");
+        puts("return ");
+        puts("std::tie(");
+        for (const AstMemberDType* itemp = sdtypep->membersp(); itemp;
+             itemp = VN_AS(itemp->nextp(), MemberDType)) {
+            if (itemp != sdtypep->membersp()) puts(", ");
+            putns(itemp, itemp->nameProtect());
+        }
+        puts(")\n    <  std::tie(");
+        for (const AstMemberDType* itemp = sdtypep->membersp(); itemp;
+             itemp = VN_AS(itemp->nextp(), MemberDType)) {
+            if (itemp != sdtypep->membersp()) puts(", ");
+            putns(itemp, "rhs." + itemp->nameProtect());
+        }
+        puts(");\n");
+        puts("}\n");
         puts("};\n");
+        puts("template <>\n");
+        putns(sdtypep, "struct VlIsCustomStruct<" + EmitCBase::prefixNameProtect(sdtypep)
+                           + "> : public std::true_type {};\n");
     }
 
     // getfunc: VL_ASSIGNSEL_XX(rbits, obits, off, lhsdata, rhsdata);
@@ -491,15 +601,19 @@ class EmitCHeader final : public EmitCConstInit {
         // Emit out of class function declarations
         puts("\n");
         emitFuncDecls(modp, /* inClassBody: */ false);
+        emitTextSection(modp, VNType::atScHdrPost);
     }
 
     explicit EmitCHeader(const AstNodeModule* modp) {
-        UINFO(5, "  Emitting header for " << prefixNameProtect(modp) << endl);
+        UINFO(5, "  Emitting header for " << prefixNameProtect(modp));
 
         // Open output file
         const string filename = v3Global.opt.makeDir() + "/" + prefixNameProtect(modp) + ".h";
-        newCFile(filename, /* slow: */ false, /* source: */ false);
-        m_ofp = v3Global.opt.systemC() ? new V3OutScFile{filename} : new V3OutCFile{filename};
+        AstCFile* const cfilep = newCFile(filename, /* slow: */ false, /* source: */ false);
+        V3OutCFile* const ofilep
+            = v3Global.opt.systemC() ? new V3OutScFile{filename} : new V3OutCFile{filename};
+
+        setOutputFile(ofilep, cfilep);
 
         ofp()->putsHeader();
         puts("// DESCRIPTION: Verilator output: Design internal header\n");
@@ -539,7 +653,7 @@ class EmitCHeader final : public EmitCConstInit {
         ofp()->putsEndGuard();
 
         // Close output file
-        VL_DO_CLEAR(delete m_ofp, m_ofp = nullptr);
+        closeOutputFile();
     }
     ~EmitCHeader() override = default;
 
@@ -551,7 +665,7 @@ public:
 // EmitC class functions
 
 void V3EmitC::emitcHeaders() {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
 
     // Process each module in turn
     for (const AstNode* nodep = v3Global.rootp()->modulesp(); nodep; nodep = nodep->nextp()) {

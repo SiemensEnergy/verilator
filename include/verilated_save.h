@@ -3,7 +3,7 @@
 //
 // Code available from: https://verilator.org
 //
-// Copyright 2000-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2000-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -294,13 +294,13 @@ inline VerilatedDeserialize& operator>>(VerilatedDeserialize& os, std::string& r
     uint32_t len = 0;
     os >> len;
     rhs.resize(len);
-    // C cast is required below
+    // NOLINTNEXTLINE(google-readability-casting)
     return os.read((void*)(rhs.data()), len);
 }
 VerilatedSerialize& operator<<(VerilatedSerialize& os, VerilatedContext* rhsp);
 VerilatedDeserialize& operator>>(VerilatedDeserialize& os, VerilatedContext* rhsp);
 
-template <class T_Key, class T_Value>
+template <typename T_Key, typename T_Value>
 VerilatedSerialize& operator<<(VerilatedSerialize& os, VlAssocArray<T_Key, T_Value>& rhs) {
     os << rhs.atDefault();
     const uint32_t len = rhs.size();
@@ -312,7 +312,7 @@ VerilatedSerialize& operator<<(VerilatedSerialize& os, VlAssocArray<T_Key, T_Val
     }
     return os;
 }
-template <class T_Key, class T_Value>
+template <typename T_Key, typename T_Value>
 VerilatedDeserialize& operator>>(VerilatedDeserialize& os, VlAssocArray<T_Key, T_Value>& rhs) {
     os >> rhs.atDefault();
     uint32_t len = 0;

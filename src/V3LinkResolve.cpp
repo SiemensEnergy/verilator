@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -47,34 +47,67 @@ class LinkResolveVisitor final : public VNVisitor {
     // Below state needs to be preserved between each module call.
     AstNodeModule* m_modp = nullptr;  // Current module
     AstClass* m_classp = nullptr;  // Class we're inside
+    string m_randcIllegalWhy;  // Why randc illegal
+    AstNode* m_randcIllegalp = nullptr;  // Node causing randc illegal
     AstNodeFTask* m_ftaskp = nullptr;  // Function or task we're inside
     AstNodeCoverOrAssert* m_assertp = nullptr;  // Current assertion
     int m_senitemCvtNum = 0;  // Temporary signal counter
+    bool m_underGenFor = false;  // Under GenFor
     bool m_underGenerate = false;  // Under GenFor/GenIf
 
-    // VISITs
+    // VISITORS
     // TODO: Most of these visitors are here for historical reasons.
     // TODO: ExpectDescriptor can move to data type resolution, and the rest
     // TODO: could move to V3LinkParse to get them out of the way of elaboration
     void visit(AstNodeModule* nodep) override {
         // Module: Create sim table for entire module and iterate
-        UINFO(8, "MODULE " << nodep << endl);
+        UINFO(8, "MODULE " << nodep);
         if (nodep->dead()) return;
         VL_RESTORER(m_modp);
         VL_RESTORER(m_senitemCvtNum);
-        {
-            m_modp = nodep;
-            m_senitemCvtNum = 0;
-            iterateChildren(nodep);
-        }
+        m_modp = nodep;
+        m_senitemCvtNum = 0;
+        iterateChildren(nodep);
     }
     void visit(AstClass* nodep) override {
         VL_RESTORER(m_classp);
-        {
-            m_classp = nodep;
-            iterateChildren(nodep);
-        }
+        m_classp = nodep;
+        iterateChildren(nodep);
     }
+    void visit(AstConstraint* nodep) override {
+        // V3LinkDot moved the isExternDef into the class, the extern proto was
+        // checked to exist, and now isn't needed
+        nodep->isExternDef(false);
+        if (nodep->isExternProto()) {
+            VL_DO_DANGLING(nodep->unlinkFrBack()->deleteTree(), nodep);
+            return;
+        }
+        iterateChildren(nodep);
+    }
+    void visit(AstConstraintBefore* nodep) override {
+        VL_RESTORER(m_randcIllegalWhy);
+        VL_RESTORER(m_randcIllegalp);
+        m_randcIllegalWhy = "'solve before' (IEEE 1800-2023 18.5.9)";
+        m_randcIllegalp = nodep;
+        iterateChildrenConst(nodep);
+    }
+    void visit(AstDist* nodep) override {
+        VL_RESTORER(m_randcIllegalWhy);
+        VL_RESTORER(m_randcIllegalp);
+        m_randcIllegalWhy = "'constraint dist' (IEEE 1800-2023 18.5.3)";
+        m_randcIllegalp = nodep;
+        iterateChildrenConst(nodep);
+    }
+    void visit(AstConstraintExpr* nodep) override {
+        VL_RESTORER(m_randcIllegalWhy);
+        VL_RESTORER(m_randcIllegalp);
+        if (nodep->isSoft()) {
+            m_randcIllegalWhy = "'constraint soft' (IEEE 1800-2023 18.5.13.1)";
+            m_randcIllegalp = nodep;
+        }
+        iterateChildrenConst(nodep);
+    }
+
     void visit(AstInitialAutomatic* nodep) override {
         iterateChildren(nodep);
         // Initial assignments under function/tasks can just be simple
@@ -88,9 +121,9 @@ class LinkResolveVisitor final : public VNVisitor {
         if (m_assertp) {
             nodep->v3warn(E_UNSUPPORTED, "Unsupported: Assert not allowed under another assert");
         }
+        VL_RESTORER(m_assertp);
         m_assertp = nodep;
         iterateChildren(nodep);
-        m_assertp = nullptr;
     }
     void visit(AstVar* nodep) override {
         iterateChildren(nodep);
@@ -103,8 +136,25 @@ class LinkResolveVisitor final : public VNVisitor {
     }
 
     void visit(AstNodeVarRef* nodep) override {
-        // VarRef: Resolve its reference
-        if (nodep->varp()) nodep->varp()->usedParam(true);
+        if (nodep->varp()) {  // Else due to dead code, might not have var pointer
+            // VarRef: Resolve its reference
+            nodep->varp()->usedParam(true);
+            // TODO should look for where genvar is valid, but for now catch
+            // just gross errors of using genvar outside any generate
+            if (nodep->varp()->isGenVar() && !m_underGenFor) {
+                nodep->v3error("Genvar "
+                               << nodep->prettyNameQ()
+                               << " used outside generate for loop (IEEE 1800-2023 27.4)");
+            }
+            if (nodep->varp()->isRandC() && m_randcIllegalp) {
+                nodep->v3error("Randc variables not allowed in "
+                               << m_randcIllegalWhy << '\n'
+                               << nodep->warnContextPrimary() << '\n'
+                               << m_randcIllegalp->warnOther()
+                               << "... Location of restricting expression\n"
+                               << m_randcIllegalp->warnContextSecondary());
+            }
+        }
         iterateChildren(nodep);
     }
 
@@ -121,17 +171,15 @@ class LinkResolveVisitor final : public VNVisitor {
             VL_DO_DANGLING(nodep->unlinkFrBack()->deleteTree(), nodep);
             return;
         }
-        {
-            m_ftaskp = nodep;
-            iterateChildren(nodep);
-        }
-        m_ftaskp = nullptr;
+        VL_RESTORER(m_ftaskp);
+        m_ftaskp = nodep;
+        iterateChildren(nodep);
         if (nodep->dpiExport()) nodep->scopeNamep(new AstScopeName{nodep->fileline(), false});
     }
     void visit(AstNodeFTaskRef* nodep) override {
         iterateChildren(nodep);
         if (AstLet* letp = VN_CAST(nodep->taskp(), Let)) {
-            UINFO(7, "letSubstitute() " << nodep << " <- " << letp << endl);
+            UINFO(7, "letSubstitute() " << nodep << " <- " << letp);
             if (letp->user2()) {
                 nodep->v3error("Recursive let substitution " << letp->prettyNameQ());
                 nodep->replaceWith(new AstConst{nodep->fileline(), AstConst::BitFalse{}});
@@ -139,8 +187,11 @@ class LinkResolveVisitor final : public VNVisitor {
                 return;
             }
             letp->user2(true);
-            // letp->dumpTree("-let-let ");
-            // nodep->dumpTree("-let-ref ");
+            if (VN_IS(nodep->backp(), StmtExpr)) {
+                nodep->v3error("Expected statement, not let substitution " << letp->prettyNameQ());
+            }
+            // if (debug()) letp->dumpTree("-let-let ");
+            // if (debug()) nodep->dumpTree("-let-ref ");
             AstStmtExpr* const letStmtp = VN_AS(letp->stmtsp(), StmtExpr);
             AstNodeExpr* const newp = letStmtp->exprp()->cloneTree(false);
             const V3TaskConnects tconnects = V3Task::taskConnects(nodep, letp->stmtsp());
@@ -157,13 +208,13 @@ class LinkResolveVisitor final : public VNVisitor {
                 const auto it = portToExprs.find(refp->varp());
                 if (it != portToExprs.end()) {
                     AstNodeExpr* const pinp = it->second;
-                    UINFO(9, "let pin subst " << refp << " <- " << pinp << endl);
+                    UINFO(9, "let pin subst " << refp << " <- " << pinp);
                     // Side effects are copied into pins, to match other simulators
                     refp->replaceWith(pinp->cloneTree(false));
                     VL_DO_DANGLING(pushDeletep(refp), refp);
                 }
             });
-            // newp->dumpTree("-let-new ");
+            // if (debug()) newp->dumpTree("-let-new ");
             nodep->replaceWith(newp);
             VL_DO_DANGLING(pushDeletep(nodep), nodep);
             // Iterate to expand further now, so we can look for recursions
@@ -171,7 +222,8 @@ class LinkResolveVisitor final : public VNVisitor {
             letp->user2(false);
             return;
         }
-        if (nodep->taskp() && (nodep->taskp()->dpiContext() || nodep->taskp()->dpiExport())) {
+        if (nodep->taskp() && !nodep->scopeNamep()
+            && (nodep->taskp()->dpiContext() || nodep->taskp()->dpiExport())) {
             nodep->scopeNamep(new AstScopeName{nodep->fileline(), false});
         }
     }
@@ -393,7 +445,7 @@ class LinkResolveVisitor final : public VNVisitor {
     }
 
     void visit(AstUdpTable* nodep) override {
-        UINFO(5, "UDPTABLE  " << nodep << endl);
+        UINFO(5, "UDPTABLE  " << nodep);
         if (!v3Global.opt.bboxUnsup()) {
             // We don't warn until V3Inst, so that UDPs that are in libraries and
             // never used won't result in any warnings.
@@ -450,7 +502,9 @@ class LinkResolveVisitor final : public VNVisitor {
     // We keep Modport's themselves around for XML dump purposes
 
     void visit(AstGenFor* nodep) override {
+        VL_RESTORER(m_underGenFor);
         VL_RESTORER(m_underGenerate);
+        m_underGenFor = true;
         m_underGenerate = true;
         iterateChildren(nodep);
     }
@@ -477,7 +531,7 @@ class LinkBotupVisitor final : public VNVisitorConst {
     // STATE
     AstNodeModule* m_modp = nullptr;  // Current module
 
-    // VISITs
+    // VISITORS
     void visit(AstNetlist* nodep) override {
         // Iterate modules backwards, in bottom-up order.
         iterateChildrenBackwardsConst(nodep);
@@ -505,7 +559,7 @@ public:
 // Link class functions
 
 void V3LinkResolve::linkResolve(AstNetlist* rootp) {
-    UINFO(4, __FUNCTION__ << ": " << endl);
+    UINFO(4, __FUNCTION__ << ": ");
     {
         const LinkResolveVisitor visitor{rootp};
         LinkBotupVisitor{rootp};

@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -85,7 +85,7 @@ V3DfgOptimizationContext::~V3DfgOptimizationContext() {
                                      + "__stats_dfg_patterns__" + ident + ".txt";
         // Open, write, close
         const std::unique_ptr<std::ofstream> ofp{V3File::new_ofstream(filename)};
-        if (ofp->fail()) v3fatal("Can't write " << filename);
+        if (ofp->fail()) v3fatal("Can't write file: " << filename);
         m_patternStats.dump(m_label, *ofp);
     }
 

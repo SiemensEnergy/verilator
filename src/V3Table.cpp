@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -172,7 +172,7 @@ class TableVisitor final : public VNVisitor {
 public:
     void simulateVarRefCb(AstVarRef* nodep) {
         // Called by TableSimulateVisitor on each unique varref encountered
-        UINFO(9, "   SimVARREF " << nodep << endl);
+        UINFO(9, "   SimVARREF " << nodep);
         AstVarScope* const vscp = nodep->varScopep();
         if (nodep->access().isWriteOrRW()) {
             // We'll make the table with a separate natural alignment for each output var, so
@@ -210,6 +210,9 @@ private:
         const double time  // max(_, 1), so we won't divide by zero
             = std::max<double>(chkvis.instrCount() * TABLE_BYTES_PER_INST + chkvis.dataCount(), 1);
         if (chkvis.isImpure()) chkvis.clearOptimizable(nodep, "Table creates side effects");
+        if (chkvis.isCoverage()) {
+            chkvis.clearOptimizable(nodep, "Table removes coverage points");
+        }
         if (!m_outWidthBytes || !m_inWidthBits) {
             chkvis.clearOptimizable(nodep, "Table has no outputs");
         }
@@ -230,9 +233,9 @@ private:
                                 << " in width (bits)=" << m_inWidthBits << " out width (bytes)="
                                 << m_outWidthBytes << " Spacetime=" << (space / time) << "("
                                 << space << "/" << time << ")"
-                                << ": " << nodep << endl);
+                                << ": " << nodep);
         if (chkvis.optimizable()) {
-            UINFO(3, " Table Optimize spacetime=" << (space / time) << " " << nodep << endl);
+            UINFO(3, " Table Optimize spacetime=" << (space / time) << " " << nodep);
             m_totalBytes += space;
         }
         return chkvis.optimizable();
@@ -284,7 +287,7 @@ private:
         for (uint32_t i = 0; i <= VL_MASK_I(m_inWidthBits); ++i) {
             const uint32_t inValue = i;
             // Make a new simulation structure so we can set new input values
-            UINFO(8, " Simulating " << std::hex << inValue << endl);
+            UINFO(8, " Simulating " << std::hex << inValue);
 
             // Above simulateVisitor clears user 3, so
             // all outputs default to nullptr to mean 'recirculating'.
@@ -301,7 +304,7 @@ private:
                 // We are using 32 bit arithmetic, because there's no way the input table can be
                 // 2^32 bytes!
                 UASSERT_OBJ(shift <= 32, nodep, "shift overflow");
-                UINFO(8, "   Input " << invscp->name() << " = " << cnst.name() << endl);
+                UINFO(8, "   Input " << invscp->name() << " = " << cnst.name());
             }
 
             // Simulate
@@ -314,11 +317,12 @@ private:
             V3Number outputAssignedMask{nodep, static_cast<int>(m_outVarps.size()), 0};
             for (TableOutputVar& tov : m_outVarps) {
                 if (V3Number* const outnump = simvis.fetchOutNumberNull(tov.varScopep())) {
-                    UINFO(8, "   Output " << tov.name() << " = " << *outnump << endl);
+                    UINFO(8, "   Output " << tov.name() << " = " << *outnump);
+                    UASSERT_OBJ(!outnump->isAnyXZ(), outnump, "Table should not contain X/Z");
                     outputAssignedMask.setBit(tov.ord(), 1);  // Mark output as assigned
                     tov.addValue(inValue, *outnump);
                 } else {
-                    UINFO(8, "   Output " << tov.name() << " not set for this input\n");
+                    UINFO(8, "   Output " << tov.name() << " not set for this input");
                     tov.setMayBeUnassigned();
                 }
             }
@@ -379,20 +383,18 @@ private:
     void visit(AstNodeModule* nodep) override {
         VL_RESTORER(m_modp);
         VL_RESTORER(m_modTables);
-        {
-            m_modp = nodep;
-            m_modTables = 0;
-            iterateChildren(nodep);
-        }
+        m_modp = nodep;
+        m_modTables = 0;
+        iterateChildren(nodep);
     }
     void visit(AstScope* nodep) override {
-        UINFO(4, " SCOPE " << nodep << endl);
+        UINFO(4, " SCOPE " << nodep);
+        VL_RESTORER(m_scopep);
         m_scopep = nodep;
         iterateChildren(nodep);
-        m_scopep = nullptr;
     }
     void visit(AstAlways* nodep) override {
-        UINFO(4, "  ALWAYS  " << nodep << endl);
+        UINFO(4, "  ALWAYS  " << nodep);
         if (treeTest(nodep)) {
             // Well, then, I'll be a memory hog.
             replaceWithTable(nodep);
@@ -424,7 +426,7 @@ void TableSimulateVisitor::varRefCb(AstVarRef* nodep) {
 // Table class functions
 
 void V3Table::tableAll(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     { TableVisitor{nodep}; }  // Destruct before checking
     V3Global::dumpCheckGlobalTree("table", 0, dumpTreeEitherLevel() >= 3);
 }

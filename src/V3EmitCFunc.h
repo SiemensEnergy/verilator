@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -118,9 +118,9 @@ class EmitCFunc VL_NOT_FINAL : public EmitCConstInit {
     VMemberMap m_memberMap;
     AstVarRef* m_wideTempRefp = nullptr;  // Variable that _WW macros should be setting
     int m_labelNum = 0;  // Next label number
-    int m_splitSize = 0;  // # of cfunc nodes placed into output file
     bool m_inUC = false;  // Inside an AstUCStmt or AstUCExpr
     bool m_emitConstInit = false;  // Emitting constant initializer
+    bool m_createdScopeHash = false;  // Already created a scope hash
 
     // State associated with processing $display style string formatting
     struct EmitDispState final {
@@ -151,6 +151,8 @@ protected:
     const AstNodeModule* m_modp = nullptr;  // Current module being emitted
     const AstCFunc* m_cfuncp = nullptr;  // Current function being emitted
     bool m_instantiatesOwnProcess = false;
+    const AstClassPackage* m_classOrPackage = nullptr;  // Pointer to current class or package
+    string m_classOrPackageHash;  // Hash of class or package name
 
     bool constructorNeedsProcess(const AstClass* const classp) {
         const AstNode* const newp = m_memberMap.findMember(classp, "new");
@@ -187,8 +189,17 @@ public:
 
     bool emitSimpleOk(AstNodeExpr* nodep);
     void emitIQW(AstNode* nodep) {
-        // Other abbrevs: "C"har, "S"hort, "F"loat, "D"ouble, stri"N"g
-        puts(nodep->dtypep()->charIQWN());
+        // See "Type letters" in verilated.h
+        // Other abbrevs: "C"har, "S"hort, "F"loat, "D"ouble, stri"N"g, "R"=queue, "U"npacked
+        puts(nodep->dtypep()->skipRefp()->charIQWN());
+    }
+    void emitRU(AstNode* nodep) {
+        AstNodeDType* dtp = nodep->dtypep()->skipRefp();
+        // See "Type letters" in verilated.h
+        if (VN_IS(dtp, UnpackArrayDType))
+            puts("U");
+        else if (VN_IS(dtp, QueueDType) || VN_IS(dtp, DynArrayDType))
+            puts("R");
     }
     void emitScIQW(AstVar* nodep) {
         UASSERT_OBJ(nodep->isSc(), nodep, "emitting SystemC operator on non-SC variable");
@@ -209,10 +220,13 @@ public:
     void emitCvtPackStr(AstNode* nodep);
     void emitCvtWideArray(AstNode* nodep, AstNode* fromp);
     void emitConstant(AstConst* nodep, AstVarRef* assigntop, const string& assignString);
+    void emitConstantString(const AstConst* nodep);
     void emitSetVarConstant(const string& assignString, AstConst* constp);
-    void emitVarReset(AstVar* varp);
-    string emitVarResetRecurse(const AstVar* varp, const string& varNameProtected,
-                               AstNodeDType* dtypep, int depth, const string& suffix);
+    void emitVarReset(AstVar* varp, bool constructing);
+    string emitVarResetRecurse(const AstVar* varp, bool constructing,
+                               const string& varNameProtected, AstNodeDType* dtypep, int depth,
+                               const string& suffix);
+    void emitVarResetScopeHash();
     void emitChangeDet();
     void emitConstInit(AstNode* initp) {
         // We should refactor emit to produce output into a provided buffer, not go through members
@@ -280,9 +294,11 @@ public:
     // VISITORS
     using EmitCConstInit::visit;
     void visit(AstCFunc* nodep) override {
+        if (nodep->emptyBody() && !nodep->isLoose()) return;
         VL_RESTORER(m_useSelfForThis);
         VL_RESTORER(m_cfuncp);
-        VL_RESTORER(m_instantiatesOwnProcess)
+        VL_RESTORER(m_instantiatesOwnProcess);
+        VL_RESTORER(m_createdScopeHash);
         m_cfuncp = nodep;
         m_instantiatesOwnProcess = false;
 
@@ -304,21 +320,24 @@ public:
         }
         puts(" {\n");
 
-        if (nodep->isLoose()) {
-            m_lazyDecls.declared(nodep);  // Defined here, so no longer needs declaration
-            if (!nodep->isStatic()) {  // Standard prologue
-                m_useSelfForThis = true;
-                puts("(void)vlSelf;  // Prevent unused variable warning\n");
-                if (!VN_IS(m_modp, Class)) puts(symClassAssign());
-            }
-        }
-
         // "+" in the debug indicates a print from the model
         puts("VL_DEBUG_IF(VL_DBG_MSGF(\"+  ");
         for (int i = 0; i < m_modp->level(); ++i) puts("  ");
         puts(prefixNameProtect(m_modp));
         puts(nodep->isLoose() ? "__" : "::");
         puts(nodep->nameProtect() + "\\n\"); );\n");
+
+        if (nodep->isLoose()) {
+            m_lazyDecls.declared(nodep);  // Defined here, so no longer needs declaration
+            if (!nodep->isStatic()) {  // Standard prologue
+                m_useSelfForThis = true;
+                if (!VN_IS(m_modp, Class)) {
+                    puts(symClassAssign());  // Uses vlSelf
+                } else {
+                    puts("(void)vlSelf;  // Prevent unused variable warning\n");
+                }
+            }
+        }
 
         // Instantiate a process class if it's going to be needed somewhere later
         nodep->forall([&](const AstNodeCCall* ccallp) -> bool {
@@ -345,17 +364,14 @@ public:
 
         if (m_useSelfForThis) {
             m_usevlSelfRef = true;
-            /*
-             * Using reference to the vlSelf pointer will help the C++
-             * compiler to have dereferenceable hints, which can help to
-             * reduce the need for branch instructions in the generated
-             * code to allow the compiler to generate load store after the
-             * if condition (including short-circuit evaluation)
-             * speculatively and also reduce the data cache pollution when
-             * executing in the wrong path to make verilator-generated code
-             * run faster.
-             */
-            puts("auto &vlSelfRef = std::ref(*vlSelf).get();\n");
+            // Using reference to the vlSelf pointer will help the C++
+            // compiler to have dereferenceable hints, which can help to
+            // reduce the need for branch instructions in the generated
+            // code to allow the compiler to generate load store after the
+            // if condition (including short-circuit evaluation)
+            // speculatively and also reduce the data cache pollution when
+            // executing in the wrong path to make Verilated code faster.
+            puts("auto& vlSelfRef = std::ref(*vlSelf).get();\n");
         }
 
         if (nodep->initsp()) {
@@ -385,6 +401,17 @@ public:
     }
 
     void visit(AstCvtArrayToPacked* nodep) override {
+        AstNodeDType* const fromDtp = nodep->fromp()->dtypep()->skipRefp();
+        AstNodeDType* const elemDtp = fromDtp->subDTypep()->skipRefp();
+        puts("VL_PACK_");
+        emitIQW(nodep);
+        puts("_");
+        emitRU(fromDtp);
+        emitIQW(elemDtp);
+        emitOpName(nodep, "(%nw, %rw, %P, %li)", nodep->fromp(), elemDtp, nullptr);
+    }
+
+    void visit(AstCvtUnpackedToQueue* nodep) override {
         AstNodeDType* const elemDTypep = nodep->fromp()->dtypep()->subDTypep();
         emitOpName(nodep, nodep->emitC(), nodep->fromp(), elemDTypep, nullptr);
     }
@@ -446,7 +473,10 @@ public:
         } else if (const AstCvtPackedToArray* const castp
                    = VN_CAST(nodep->rhsp(), CvtPackedToArray)) {
             putns(castp, "VL_UNPACK_");
+            emitRU(nodep);
             emitIQW(nodep->dtypep()->subDTypep());
+            puts("_");
+            emitRU(castp->fromp());
             emitIQW(castp->fromp());
             puts("(");
             putns(castp->dtypep(), cvtToStr(castp->dtypep()->subDTypep()->widthMin()));
@@ -587,6 +617,7 @@ public:
             putnbs(argrefp, argrefp->dtypep()->cType(argrefp->nameProtect(), false, false));
         }
         puts(") {\n");
+        VL_RESTORER(m_createdScopeHash);
         iterateAndNextConstNull(nodep->exprp());
         puts("}\n");
     }
@@ -940,12 +971,14 @@ public:
     void visit(AstJumpBlock* nodep) override {
         nodep->labelNum(++m_labelNum);
         putns(nodep, "{\n");  // Make it visually obvious label jumps outside these
+        VL_RESTORER(m_createdScopeHash);
         iterateAndNextConstNull(nodep->stmtsp());
         iterateAndNextConstNull(nodep->endStmtsp());
         puts("}\n");
     }
     void visit(AstCLocalScope* nodep) override {
         putns(nodep, "{\n");
+        VL_RESTORER(m_createdScopeHash);
         iterateAndNextConstNull(nodep->stmtsp());
         puts("}\n");
     }
@@ -956,6 +989,7 @@ public:
         putns(nodep, "__Vlabel" + cvtToStr(nodep->blockp()->labelNum()) + ": ;\n");
     }
     void visit(AstWhile* nodep) override {
+        VL_RESTORER(m_createdScopeHash);
         iterateAndNextConstNull(nodep->precondsp());
         putns(nodep, "while (");
         iterateAndNextConstNull(nodep->condp());
@@ -969,12 +1003,15 @@ public:
         putns(nodep, "if (");
         if (!nodep->branchPred().unknown()) {
             puts(nodep->branchPred().ascii());
-            puts("(");
+            puts("((");  // Two parens, so that VL_UNLIKELY((class<foo,bar>)) works
         }
         iterateAndNextConstNull(nodep->condp());
-        if (!nodep->branchPred().unknown()) puts(")");
+        if (!nodep->branchPred().unknown()) puts("))");
         puts(") {\n");
-        iterateAndNextConstNull(nodep->thensp());
+        {
+            VL_RESTORER(m_createdScopeHash);
+            iterateAndNextConstNull(nodep->thensp());
+        }
         puts("}");
         if (!nodep->elsesp()) {
             puts("\n");
@@ -983,6 +1020,7 @@ public:
                 puts(" else ");
                 iterateAndNextConstNull(nodep->elsesp());
             } else {
+                VL_RESTORER(m_createdScopeHash);
                 puts(" else {\n");
                 iterateAndNextConstNull(nodep->elsesp());
                 puts("}\n");
@@ -990,6 +1028,7 @@ public:
         }
     }
     void visit(AstExprStmt* nodep) override {
+        VL_RESTORER(m_createdScopeHash);
         // GCC allows compound statements in expressions, but this is not standard.
         // So we use an immediate-evaluation lambda and comma operator
         putnbs(nodep, "([&]() {\n");
@@ -1056,9 +1095,8 @@ public:
         putns(nodep, "vlSymsp->_vm_contextp__->timeprecision()");
     }
     void visit(AstNodeSimpleText* nodep) override {
-        const string text = m_inUC && m_useSelfForThis
-                                ? VString::replaceWord(nodep->text(), "this", "vlSelf")
-                                : nodep->text();
+        const string text
+            = VSelfPointerText::replaceThis(m_inUC && m_useSelfForThis, nodep->text());
         if (nodep->tracking() || m_trackText) {
             puts(text);
         } else {
@@ -1215,9 +1253,8 @@ public:
         puts(")");
     }
     void visit(AstNewCopy* nodep) override {
-        putns(nodep, "VL_NEW(" + prefixNameProtect(nodep->dtypep()) + ", "
-                         + optionalProcArg(nodep->dtypep()));
-        puts("*");  // i.e. make into a reference
+        putns(nodep, "VL_NEW(" + prefixNameProtect(nodep->dtypep()));
+        puts(", *");  // i.e. make into a reference
         iterateAndNextConstNull(nodep->rhsp());
         puts(")");
     }
@@ -1335,7 +1372,7 @@ public:
     void visit(AstThisRef* nodep) override {
         putnbs(nodep, nodep->dtypep()->cType("", false, false));
         puts("{");
-        puts(m_useSelfForThis ? "vlSelf" : "this");
+        puts(VSelfPointerText::replaceThis(m_useSelfForThis, "this"));
         puts("}");
     }
 
@@ -1435,7 +1472,7 @@ public:
     }
     void visit(AstCReset* nodep) override {
         AstVar* const varp = nodep->varrefp()->varp();
-        emitVarReset(varp);
+        emitVarReset(varp, nodep->constructing());
     }
     void visit(AstExecGraph* nodep) override {
         // The location of the AstExecGraph within the containing AstCFunc is where we want to
@@ -1455,9 +1492,9 @@ public:
 
     EmitCFunc()
         : m_lazyDecls(*this) {}
-    EmitCFunc(AstNode* nodep, V3OutCFile* ofp, bool trackText = false)
+    EmitCFunc(AstNode* nodep, V3OutCFile* ofp, AstCFile* cfilep, bool trackText = false)
         : EmitCFunc{} {
-        m_ofp = ofp;
+        setOutputFile(ofp, cfilep);
         m_trackText = trackText;
         iterateConst(nodep);
     }

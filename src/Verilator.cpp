@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -42,10 +42,12 @@
 #include "V3DepthBlock.h"
 #include "V3Descope.h"
 #include "V3DfgOptimizer.h"
+#include "V3DiagSarif.h"
 #include "V3EmitC.h"
 #include "V3EmitCMain.h"
 #include "V3EmitCMake.h"
 #include "V3EmitMk.h"
+#include "V3EmitMkJson.h"
 #include "V3EmitV.h"
 #include "V3EmitXml.h"
 #include "V3ExecGraph.h"
@@ -53,6 +55,7 @@
 #include "V3File.h"
 #include "V3Force.h"
 #include "V3Fork.h"
+#include "V3FuncOpt.h"
 #include "V3Gate.h"
 #include "V3Global.h"
 #include "V3Graph.h"
@@ -75,7 +78,6 @@
 #include "V3Order.h"
 #include "V3Os.h"
 #include "V3Param.h"
-#include "V3ParseSym.h"
 #include "V3PreShell.h"
 #include "V3Premit.h"
 #include "V3ProtectLib.h"
@@ -100,6 +102,7 @@
 #include "V3Trace.h"
 #include "V3TraceDecl.h"
 #include "V3Tristate.h"
+#include "V3Udp.h"
 #include "V3Undriven.h"
 #include "V3Unknown.h"
 #include "V3Unroll.h"
@@ -181,7 +184,9 @@ static void process() {
 
         // Remove any modules that were parameterized and are no longer referenced.
         V3Dead::deadifyModules(v3Global.rootp());
+
         v3Global.checkTree();
+        if (v3Global.hasTable()) V3Udp::udpResolve(v3Global.rootp());
 
         // Create a hierarchical Verilation plan
         if (!v3Global.opt.lintOnly() && !v3Global.opt.serializeOnly()
@@ -497,6 +502,9 @@ static void process() {
         // --GENERATION------------------
 
         if (!v3Global.opt.serializeOnly()) {
+            // Generic optimizations on a per-function basis
+            if (v3Global.opt.fFunc()) V3FuncOpt::funcOptAll(v3Global.rootp());
+
             // Remove unused vars
             V3Const::constifyAll(v3Global.rootp());
             V3Dead::deadifyAll(v3Global.rootp());
@@ -621,7 +629,7 @@ static void process() {
     if (!v3Global.opt.lintOnly() && !v3Global.opt.serializeOnly() && !v3Global.opt.dpiHdrOnly()) {
         if (v3Global.opt.main()) V3EmitCMain::emit();
 
-        // V3EmitMk/V3EmitCMake must be after all other emitters,
+        // V3EmitMk/V3EmitCMake/V3EmitMkJson must be after all other emitters,
         // as they and below code visits AstCFiles added earlier
         size_t src_f_cnt = 0;
         for (AstNode* nodep = v3Global.rootp()->filesp(); nodep; nodep = nodep->nextp()) {
@@ -630,6 +638,7 @@ static void process() {
         }
         if (src_f_cnt >= V3EmitMk::PARALLEL_FILE_CNT_THRESHOLD) v3Global.useParallelBuild(true);
         if (v3Global.opt.cmake()) V3EmitCMake::emit();
+        if (v3Global.opt.makeJson()) V3EmitMkJson::emit();
         if (v3Global.opt.gmake()) V3EmitMk::emitmk();
     }
 
@@ -639,7 +648,7 @@ static void process() {
 }
 
 static void verilate(const string& argString) {
-    UINFO(1, "Option --verilate: Start Verilation\n");
+    UINFO(1, "Option --verilate: Start Verilation");
 
     // Can we skip doing everything if times are ok?
     V3File::addSrcDepend(v3Global.opt.buildDepBin());
@@ -647,7 +656,7 @@ static void verilate(const string& argString) {
         && V3File::checkTimes(v3Global.opt.hierTopDataDir() + "/" + v3Global.opt.prefix()
                                   + "__verFiles.dat",
                               argString)) {
-        UINFO(1, "--skip-identical: No change to any source files, exiting\n");
+        UINFO(1, "--skip-identical: No change to any source files, exiting");
         return;
     }
     // Undocumented debugging - cannot be a switch as then command line
@@ -687,7 +696,7 @@ static void verilate(const string& argString) {
         V3PreShell::selfTest();
         V3Broken::selfTest();
         V3ThreadPool::selfTest();
-        UINFO(2, "selfTest done\n");
+        UINFO(2, "selfTest done");
     }
 
     // Read first filename
@@ -730,6 +739,10 @@ static void verilate(const string& argString) {
             v3Global.hierPlanp()->writeCommandArgsFiles(true);
             V3EmitCMake::emit();
         }
+        if (v3Global.opt.makeJson()) {
+            v3Global.hierPlanp()->writeCommandArgsFiles(true);
+            V3EmitMkJson::emit();
+        }
         v3Global.hierPlanp()->writeParametersFiles();
     }
     if (v3Global.opt.makeDepend().isTrue()) {
@@ -742,7 +755,8 @@ static void verilate(const string& argString) {
                                  + "__idmap.xml");
     }
 
-    if (v3Global.opt.skipIdentical().isTrue() || v3Global.opt.makeDepend().isTrue()) {
+    if ((v3Global.opt.skipIdentical().isTrue() || v3Global.opt.makeDepend().isTrue())
+        && !V3Error::isErrorOrWarn()) {
         V3File::writeTimes(v3Global.opt.hierTopDataDir() + "/" + v3Global.opt.prefix()
                                + "__verFiles.dat",
                            argString);
@@ -779,7 +793,7 @@ static void execBuildJob() {
     UASSERT(v3Global.opt.gmake(), "--build requires GNU Make.");
     UASSERT(!v3Global.opt.cmake(), "--build cannot use CMake.");
     VlOs::DeltaWallTime buildWallTime{true};
-    UINFO(1, "Start Build\n");
+    UINFO(1, "Start Build");
 
     const string cmdStr = buildMakeCmd(v3Global.opt.prefix() + ".mk", "");
     V3Os::filesystemFlushBuildDir(v3Global.opt.hierTopDataDir());
@@ -839,7 +853,7 @@ int main(int argc, char** argv) {
     if (v3Global.opt.verilate()) {
         verilate(argString);
     } else {
-        UINFO(1, "Option --no-verilate: Skip Verilation\n");
+        UINFO(1, "Option --no-verilate: Skip Verilation");
     }
 
     if (v3Global.hierPlanp() && v3Global.opt.gmake()) {
@@ -847,6 +861,8 @@ int main(int argc, char** argv) {
     } else if (v3Global.opt.build()) {
         execBuildJob();
     }
+
+    V3DiagSarif::output(true);
 
     // Explicitly release resources
     V3PreShell::shutdown();
@@ -859,5 +875,5 @@ int main(int argc, char** argv) {
         V3Stats::summaryReport();
     }
 
-    UINFO(1, "Done, Exiting...\n");
+    UINFO(1, "Done, Exiting...");
 }

@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -191,11 +191,11 @@ AstNodeDType* V3ParseGrammar::createArray(AstNodeDType* basep, AstNodeRange* nra
 AstVar* V3ParseGrammar::createVariable(FileLine* fileline, const string& name,
                                        AstNodeRange* arrayp, AstNode* attrsp) {
     AstNodeDType* dtypep = GRAMMARP->m_varDTypep;
-    UINFO(5, "  creVar " << name << "  decl=" << GRAMMARP->m_varDecl << "  io="
-                         << GRAMMARP->m_varIO << "  dt=" << (dtypep ? "set" : "") << endl);
-    if (GRAMMARP->m_varIO == VDirection::NONE && GRAMMARP->m_varDecl == VVarType::PORT) {
+    UINFO(5, "  creVar " << name << "  decl=" << GRAMMARP->m_varDecl
+                         << "  io=" << GRAMMARP->m_varIO << "  dt=" << (dtypep ? "set" : ""));
+    if (GRAMMARP->m_varIO == VDirection::NONE  // In non-ANSI port list
+        && GRAMMARP->m_varDecl == VVarType::PORT) {
         // Just a port list with variable name (not v2k format); AstPort already created
-        if (dtypep) fileline->v3warn(E_UNSUPPORTED, "Unsupported: Ranges ignored in port-lists");
         if (arrayp) VL_DO_DANGLING(arrayp->deleteTree(), arrayp);
         if (attrsp) {
             // TODO: Merge attributes across list? Or warn attribute is ignored
@@ -222,7 +222,7 @@ AstVar* V3ParseGrammar::createVariable(FileLine* fileline, const string& name,
     // UINFO(0,"CREVAR "<<fileline->ascii()<<" decl="<<GRAMMARP->m_varDecl.ascii()<<"
     // io="<<GRAMMARP->m_varIO.ascii()<<endl);
     VVarType type = GRAMMARP->m_varDecl;
-    if (type == VVarType::UNKNOWN) {
+    if (type == VVarType::UNKNOWN) {  // e.g. "output" non-ANSI standalone direction (vs "reg")
         if (GRAMMARP->m_varIO.isAny()) {
             type = VVarType::PORT;
         } else {
@@ -262,7 +262,6 @@ AstVar* V3ParseGrammar::createVariable(FileLine* fileline, const string& name,
         // Parser needs to know what is a type
         AstNode* const newp = new AstTypedefFwd{fileline, name};
         AstNode::addNext<AstNode, AstNode>(nodep, newp);
-        SYMP->reinsert(newp);
     }
     // Don't set dtypep in the ranging;
     // We need to autosize parameters and integers separately

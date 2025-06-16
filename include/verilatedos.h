@@ -3,7 +3,7 @@
 //
 // Code available from: https://verilator.org
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you can
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you can
 // redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -67,9 +67,19 @@
 # endif
 # define VL_LIKELY(x) __builtin_expect(!!(x), 1)  // Prefer over C++20 [[likely]]
 # define VL_UNLIKELY(x) __builtin_expect(!!(x), 0)  // Prefer over C++20 [[unlikely]]
-# define VL_UNREACHABLE __builtin_unreachable()  // C++23 std::unreachable()
 # define VL_PREFETCH_RD(p) __builtin_prefetch((p), 0)
 # define VL_PREFETCH_RW(p) __builtin_prefetch((p), 1)
+#endif
+
+#ifdef __cpp_lib_unreachable
+/// Statement that may never be reached (for coverage etc)
+# define VL_UNREACHABLE std::unreachable()  // C++23
+#elif defined(__GNUC__)
+# define VL_UNREACHABLE __builtin_unreachable()
+#elif defined(_MSC_VER)  // MSVC
+# define VL_UNREACHABLE __assume(false)
+#else
+# define VL_UNREACHABLE
 #endif
 
 // Function acquires a capability/lock (-fthread-safety)
@@ -179,9 +189,6 @@
 #endif
 /// Boolean expression never hit by users (branch coverage disabled)
 # define VL_UNCOVERABLE(x) VL_UNLIKELY(x)
-#ifndef VL_UNREACHABLE
-# define VL_UNREACHABLE  ///< Statement that may never be reached (for coverage etc)
-#endif
 #ifndef VL_PREFETCH_RD
 # define VL_PREFETCH_RD(p)  ///< Prefetch pointer argument with read intent
 #endif
@@ -467,8 +474,7 @@ using ssize_t = uint32_t;  ///< signed size_t; returned from read()
 #ifndef VL_VALUE_STRING_MAX_WORDS
     #define VL_VALUE_STRING_MAX_WORDS 64  ///< Max size in words of String conversion operation
 #endif
-
-#define VL_VALUE_STRING_MAX_CHARS (VL_VALUE_STRING_MAX_WORDS * VL_EDATASIZE / VL_BYTESIZE)
+#define VL_VALUE_STRING_MAX_CHARS (VL_VALUE_STRING_MAX_WORDS) * 4
 
 //=========================================================================
 // Base macros
@@ -626,7 +632,12 @@ namespace VlOs {
 /// Get environment variable
 extern std::string getenvStr(const std::string& envvar,
                              const std::string& defaultValue) VL_MT_SAFE;
-extern uint64_t memUsageBytes() VL_MT_SAFE;  ///< Return memory usage in bytes, or 0 if unknown
+
+/// Return currently executing processor number; may do an OS call underneath so slow
+extern uint16_t getcpu() VL_MT_SAFE;
+
+/// Return memory usage in bytes, or 0 if unknown
+extern uint64_t memUsageBytes() VL_MT_SAFE;
 
 // Internal: Record CPU time, starting point on construction, and current delta from that
 class DeltaCpuTime final {
@@ -696,7 +707,7 @@ reverse_wrapper<T> reverse_view(const T& v) {
 // Object that is returned by this function is not considered
 // as MT_SAFE and any function call on this object still
 // needs to be `VL_MT_SAFE`.
-template <class T>
+template <typename T>
 T const& as_const(T& v) VL_MT_SAFE {
     return v;
 }

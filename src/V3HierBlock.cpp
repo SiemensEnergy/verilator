@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -88,6 +88,7 @@
 
 #include "V3HierBlock.h"
 
+#include "V3Config.h"
 #include "V3EmitV.h"
 #include "V3File.h"
 #include "V3Os.h"
@@ -115,6 +116,8 @@ static void V3HierWriteCommonInputs(const V3HierBlock* hblockp, std::ostream* of
     if (hblockp) topModuleFile = hblockp->vFileIfNecessary();
     if (!forCMake) {
         if (!topModuleFile.empty()) *of << topModuleFile << "\n";
+        const V3StringList& vFiles = v3Global.opt.vFiles();
+        for (const string& i : vFiles) *of << i << "\n";
     }
     const V3StringSet& libraryFiles = v3Global.opt.libraryFiles();
     for (const string& i : libraryFiles) {
@@ -186,6 +189,23 @@ V3StringList V3HierBlock::commandArgs(bool forCMake) const {
     if (!params().gTypeParams().empty())
         opts.push_back(" --hierarchical-params-file " + typeParametersFilename());
 
+    const int blockThreads = V3Config::getHierWorkers(m_modp->origName());
+    if (blockThreads > 1) {
+        if (hasParent()) {
+            V3Config::getHierWorkersFileLine(m_modp->origName())
+                ->v3warn(E_UNSUPPORTED, "Specifying workers for nested hierarchical blocks");
+        } else {
+            if (v3Global.opt.threads() < blockThreads) {
+                m_modp->v3error("Hierarchical blocks cannot be scheduled on more threads than in "
+                                "thread pool, threads = "
+                                << v3Global.opt.threads()
+                                << " hierarchical block threads = " << blockThreads);
+            }
+
+            opts.push_back(" --threads " + std::to_string(blockThreads));
+        }
+    }
+
     return opts;
 }
 
@@ -253,7 +273,7 @@ void V3HierBlock::writeCommandArgsFile(bool forCMake) const {
     for (const string& opt : commandOpts) *of << opt << "\n";
     *of << hierBlockArgs().front() << "\n";
     for (const auto& hierblockp : m_children) *of << hierblockp->hierBlockArgs().front() << "\n";
-    *of << v3Global.opt.allArgsStringForHierBlock(false, forCMake) << "\n";
+    *of << v3Global.opt.allArgsStringForHierBlock(false) << "\n";
 }
 
 string V3HierBlock::commandArgsFilename(bool forCMake) const {
@@ -271,7 +291,7 @@ void V3HierBlock::writeParametersFile() const {
     const string moduleName = "Vhsh" + hash.digestSymbol();
     const std::unique_ptr<std::ofstream> of{V3File::new_ofstream(typeParametersFilename())};
     *of << "module " << moduleName << ";\n";
-    for (const AstParamTypeDType* const gparam : m_params.gTypeParams()) {
+    for (AstParamTypeDType* const gparam : m_params.gTypeParams()) {
         AstTypedef* tdefp
             = new AstTypedef(new FileLine{FileLine::builtInFilename()}, gparam->name(), nullptr,
                              VFlagChildDType{}, gparam->skipRefp()->cloneTreePure(true));
@@ -302,8 +322,7 @@ class HierBlockUsageCollectVisitor final : public VNVisitorConst {
         // Don't visit twice
         if (nodep->user1SetOnce()) return;
         UINFO(5, "Checking " << nodep->prettyNameQ() << " from "
-                             << (m_hierBlockp ? m_hierBlockp->prettyNameQ() : "null"s)
-                             << std::endl);
+                             << (m_hierBlockp ? m_hierBlockp->prettyNameQ() : "null"s));
         VL_RESTORER(m_modp);
         AstModule* const prevHierBlockp = m_hierBlockp;
         ModuleSet prevReferred;
@@ -362,8 +381,8 @@ void V3HierBlockPlan::add(const AstNodeModule* modp, const V3HierBlockParams& pa
     if (pair.second) {
         V3HierBlock* hblockp = new V3HierBlock{modp, params};
         UINFO(3, "Add " << modp->prettyNameQ() << " with " << params.gparams().size()
-                        << " parameters and " << params.gTypeParams().size() << " type parameters"
-                        << std::endl);
+                        << " parameters and " << params.gTypeParams().size()
+                        << " type parameters");
         pair.first->second = hblockp;
     }
 }
@@ -374,7 +393,7 @@ void V3HierBlockPlan::registerUsage(const AstNodeModule* parentp, const AstNodeM
     const iterator child = m_blocks.find(childp);
     if (child != m_blocks.end()) {
         UINFO(3, "Found usage relation " << parentp->prettyNameQ() << " uses "
-                                         << childp->prettyNameQ() << std::endl);
+                                         << childp->prettyNameQ());
         parent->second->addChild(child->second);
         child->second->addParent(parent->second);
     }
@@ -477,7 +496,7 @@ void V3HierBlockPlan::writeCommandArgsFiles(bool forCMake) const {
     }
     *of << "--threads " << cvtToStr(v3Global.opt.threads()) << "\n";
     *of << (v3Global.opt.systemC() ? "--sc" : "--cc") << "\n";
-    *of << v3Global.opt.allArgsStringForHierBlock(true, forCMake) << "\n";
+    *of << v3Global.opt.allArgsStringForHierBlock(true) << "\n";
 }
 
 string V3HierBlockPlan::topCommandArgsFilename(bool forCMake) {
@@ -485,5 +504,5 @@ string V3HierBlockPlan::topCommandArgsFilename(bool forCMake) {
 }
 
 void V3HierBlockPlan::writeParametersFiles() const {
-    for (const auto& block : *this) { block.second->writeParametersFile(); }
+    for (const auto& block : *this) block.second->writeParametersFile();
 }

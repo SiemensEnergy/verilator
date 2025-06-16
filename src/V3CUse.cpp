@@ -6,7 +6,7 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2024 by Wilson Snyder. This program is free software; you
+// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
@@ -98,7 +98,7 @@ public:
         for (auto& used : m_didUse) {
             AstCUse* const newp = new AstCUse{used.second.first, used.second.second, used.first};
             m_modp->addStmtsp(newp);
-            UINFO(8, "Insert " << newp << endl);
+            UINFO(8, "Insert " << newp);
         }
     }
     ~CUseVisitor() override = default;
@@ -109,7 +109,7 @@ public:
 // Class class functions
 
 void V3CUse::cUseAll() {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     // Call visitor separately for each module, so visitor state is cleared
     for (AstNodeModule* modp = v3Global.rootp()->modulesp(); modp;
          modp = VN_AS(modp->nextp(), NodeModule)) {
