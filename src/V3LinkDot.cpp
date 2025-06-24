@@ -2993,16 +2993,16 @@ class LinkDotResolveVisitor final : public VNVisitor {
             UINFO(9, indent() << "      " << textp);
             // Lookup
             if (VSymEnt* const foundp = m_curSymp->findIdFallback(textp->text())) {
-                if (AstVar* const varp = VN_CAST(foundp->nodep(), Var)) {
-                    if (varp->isParam() || varp->isGenVar()) {
-                        // Attach found Text reference to PatMember
-                        nodep->varrefp(
-                            new AstVarRef{nodep->fileline(),
-                                          foundp->imported() ? foundp->classOrPackagep() : nullptr,
-                                          varp, VAccess::READ});
-                        UINFO(9, indent() << " new " << nodep->varrefp());
-                    }
-                }
+                // if (AstVar* const varp = VN_CAST(foundp->nodep(), Var)) {
+                //     if (varp->isParam() || varp->isGenVar()) {
+                //         // Attach found Text reference to PatMember
+                //         nodep->varrefp(
+                //             new AstVarRef{nodep->fileline(),
+                //                           foundp->imported() ? foundp->classOrPackagep() : nullptr,
+                //                           varp, VAccess::READ});
+                //         UINFO(9, indent() << " new " << nodep->varrefp());
+                //     }
+                // }
                 if (AstEnumItem* const itemp = VN_CAST(foundp->nodep(), EnumItem)) {
                     // Attach enum item value to PatMember
                     nodep->varrefp(
