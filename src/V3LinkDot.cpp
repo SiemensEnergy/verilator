@@ -2998,8 +2998,8 @@ class LinkDotResolveVisitor final : public VNVisitor {
                 //         // Attach found Text reference to PatMember
                 //         nodep->varrefp(
                 //             new AstVarRef{nodep->fileline(),
-                //                           foundp->imported() ? foundp->classOrPackagep() : nullptr,
-                //                           varp, VAccess::READ});
+                //                           foundp->imported() ? foundp->classOrPackagep() :
+                //                           nullptr, varp, VAccess::READ});
                 //         UINFO(9, indent() << " new " << nodep->varrefp());
                 //     }
                 // }
